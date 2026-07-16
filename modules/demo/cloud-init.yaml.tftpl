@@ -1,0 +1,80 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+
+write_files:
+  - path: /opt/argus/.env
+    permissions: "0600"
+    content: |
+      CORTEX_PG_URL=${cortex_pg_url}
+      CORTEX_QDRANT_URL=${cortex_qdrant_url}
+      CORTEX_S3_ENDPOINT=${cortex_s3_endpoint}
+      CORTEX_S3_BUCKET=${cortex_s3_bucket}
+      CORTEX_S3_ACCESS_KEY=${minio_access_key}
+      CORTEX_S3_SECRET_KEY=${minio_secret_key}
+      ARGUS_CURATOR_SCAN_ROOT=${curator_scan_root}
+
+  - path: /opt/argus/Caddyfile
+    content: |
+      # Cloudflare proxies in front of this, so set the zone's SSL mode to
+      # Full (strict) -- Caddy terminates real TLS at the origin.
+      ${domain} {
+        handle /caption/* {
+          reverse_proxy lens:8100
+        }
+        handle /scan/* {
+          reverse_proxy curator:8101
+        }
+        handle {
+          reverse_proxy frontend:3000
+        }
+      }
+
+  - path: /opt/argus/compose.yaml
+    permissions: "0600"
+    content: |
+      services:
+        caddy:
+          image: caddy:2
+          restart: unless-stopped
+          ports: ["80:80", "443:443"]
+          volumes:
+            - /opt/argus/Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy_data:/data
+
+        frontend:
+          # TODO: point at a built image; argus-vision-demo builds from ./frontend.
+          image: ghcr.io/smk762/argus-vision-demo:latest
+          restart: unless-stopped
+          environment:
+            NEXT_PUBLIC_API_URL: "https://${domain}"
+            NEXT_PUBLIC_CURATOR_URL: "https://${domain}"
+            NEXT_PUBLIC_CURATOR_UI_MODE: demo
+
+        lens:
+          # Replay tier: reads recorded captions out of the lineage store
+          # instead of loading a model. No GPU on this box by design.
+          image: ghcr.io/smk762/argus-lens:latest
+          restart: unless-stopped
+          env_file: /opt/argus/.env
+          command: ["argus-lens", "serve", "--cors", "--port", "8100"]
+
+        curator:
+          # [server] only -- the gpu extra is for detectors/embeddings we don't run here.
+          image: ghcr.io/smk762/argus-curator:latest
+          restart: unless-stopped
+          env_file: /opt/argus/.env
+          command: ["argus-curator", "serve", "--cors", "--port", "8101"]
+          volumes:
+            - /srv/argus/samples:${curator_scan_root}:ro
+
+      volumes:
+        caddy_data:
+
+runcmd:
+  - [mkdir, -p, /srv/argus/samples]
+  - [systemctl, enable, --now, docker]
+  - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]

@@ -1,0 +1,17 @@
+# cp terraform.tfvars.example terraform.tfvars, fill in, never commit.
+# Better: set these as sensitive workspace variables in HCP Terraform instead,
+# so no secret ever touches this disk.
+
+hcloud_token          = "..."           # Hetzner Console > Security > API tokens (Read & Write)
+cloudflare_api_token  = "..."           # Zone:DNS:Edit + Workers R2 Storage:Edit on dragonhound.dev
+cloudflare_account_id = "..."           # Cloudflare dashboard sidebar
+cloudflare_zone_id    = "..."           # dragonhound.dev > Overview > API (bottom right)
+
+ssh_public_key = "ssh-ed25519 AAAA... you@host"
+admin_ip       = "203.0.113.9/32"       # curl -s ifconfig.me  -- then append /32
+
+domain = "argus.dragonhound.dev"
+
+# Presigned R2 URL for the seeded lineage dump. Leave empty on first apply;
+# fill in once you've uploaded the tape. See README > The tape.
+tape_dump_url = ""

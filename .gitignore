@@ -1,0 +1,13 @@
+.terraform/
+.terraform.lock.hcl.bak
+
+# Never commit these. Credentials live in HCP Terraform workspace variables.
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+.terraformrc
+terraform.rc

@@ -1,0 +1,66 @@
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      # -backend=false installs providers and checks the config without needing
+      # HCP Terraform credentials, so this runs on forks and PRs unauthenticated.
+      - name: init
+        run: terraform init -backend=false
+
+      - name: validate
+        run: terraform validate
+
+  # Remote plan runs in HCP Terraform, which holds the provider tokens as
+  # workspace variables. Enable by setting the TF_API_TOKEN repository secret
+  # (a user API token from app.terraform.io); it stays skipped until then.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    env:
+      TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
+    steps:
+      - name: guard
+        id: guard
+        run: |
+          if [ -z "$TF_API_TOKEN" ]; then
+            echo "TF_API_TOKEN not set; skipping remote plan." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - if: steps.guard.outputs.run == 'true'
+        run: terraform init
+
+      - if: steps.guard.outputs.run == 'true'
+        run: terraform plan -input=false

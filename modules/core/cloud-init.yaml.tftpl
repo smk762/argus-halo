@@ -1,0 +1,73 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - postgresql-client-16
+  - curl
+
+write_files:
+  - path: /opt/argus/compose.yaml
+    permissions: "0600"
+    content: |
+      # Every published port binds to ${private_ip} -- the private interface.
+      # Nothing here is reachable from the internet even if the firewall is wrong.
+      services:
+        postgres:
+          image: postgres:16
+          restart: unless-stopped
+          ports: ["${private_ip}:5432:5432"]
+          environment:
+            POSTGRES_USER: argus
+            POSTGRES_PASSWORD: "${postgres_password}"
+            POSTGRES_DB: argus
+          volumes: ["/opt/argus/data/postgres:/var/lib/postgresql/data"]
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U argus"]
+            interval: 10s
+            retries: 5
+
+        qdrant:
+          image: qdrant/qdrant:latest
+          restart: unless-stopped
+          ports: ["${private_ip}:6333:6333"]
+          volumes: ["/opt/argus/data/qdrant:/qdrant/storage"]
+
+        minio:
+          image: minio/minio:latest
+          restart: unless-stopped
+          command: server /data --console-address ":9001"
+          ports: ["${private_ip}:9000:9000"]
+          environment:
+            MINIO_ROOT_USER: "${minio_access_key}"
+            MINIO_ROOT_PASSWORD: "${minio_secret_key}"
+          volumes: ["/opt/argus/data/minio:/data"]
+
+  - path: /opt/argus/restore-tape.sh
+    permissions: "0700"
+    content: |
+      #!/usr/bin/env bash
+      # Seeds the stores from the recorded pipeline run. Idempotent: the marker
+      # means a re-run of cloud-init won't clobber a live database.
+      set -euo pipefail
+      MARKER=/opt/argus/data/.tape-restored
+      [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
+      [ -z "${tape_dump_url}" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
+
+      cd /opt/argus
+      curl -fsSL "${tape_dump_url}" -o tape.tar.zst
+      tar --zstd -xf tape.tar.zst -C /opt/argus/tape
+
+      until pg_isready -h ${private_ip} -U argus -q; do sleep 2; done
+      psql "postgresql://argus:${postgres_password}@${private_ip}:5432/argus" \
+        -f /opt/argus/tape/lineage.sql
+
+      # Qdrant snapshot + MinIO blobs land via their own APIs -- see README.
+      touch "$MARKER"
+      rm -f tape.tar.zst
+
+runcmd:
+  - [mkdir, -p, /opt/argus/data/postgres, /opt/argus/data/qdrant, /opt/argus/data/minio, /opt/argus/tape]
+  - [systemctl, enable, --now, docker]
+  - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]
+  - [/opt/argus/restore-tape.sh]
