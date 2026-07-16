@@ -4,7 +4,7 @@ terraform {
   # HCP Terraform holds state and does the locking. Run `terraform login` once,
   # then create the workspace in the UI (Version Control: none / CLI-driven).
   cloud {
-    organization = "REPLACE_ME"
+    organization = "dragonhound_argus"
 
     workspaces {
       name = "argus-halo"
