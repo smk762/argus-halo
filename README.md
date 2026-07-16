@@ -41,6 +41,9 @@ Tear down just the public half, leaving the stores up:
 terraform destroy -target=module.demo
 ```
 
+For the full lifecycle — pre-deploy gates, verification, tape seeding, teardown,
+secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
+
 ## Decisions
 
 **Why two hosts, when it all fits on one.** It does fit — the tape is ~600 images, under 2 GB of blobs, a few thousand lineage rows, and roughly 2.5 MB of Qdrant vectors. The split is not about capacity or protecting state. It's blast radius: the demo tier exposes curator's `/scan/folder` to the internet, and a compromise there should not land on the database. Postgres, Qdrant and MinIO bind to `10.0.1.10` only. Hetzner firewalls filter the public interface exclusively, so the stores are unreachable from outside by construction rather than by a rule that could be edited wrong.
