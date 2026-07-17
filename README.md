@@ -56,6 +56,8 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 **Why Cloudflare proxied.** Hides the origin address, terminates edge TLS, absorbs probes. Set the zone SSL mode to **Full (strict)** — Caddy holds a real certificate at the origin.
 
+**Why our own compose, not argus-studio's.** [argus-studio](https://github.com/smk762/argus-studio) already ships suite compose orchestration — but it's a single-host *developer* stack: `up --build` from sibling checkouts, profiles, a GPU override, source bind-mounts. This demo is deployment-shaped and different in kind: two hosts with a public/private split, pinned published images (no build context), Caddy terminating real TLS at the origin, and the core stores (postgres/qdrant/minio) bound to the private network — none of which studio's dev compose models. So the demo keeps a small, purpose-built compose per tier and consumes studio only as the published `frontend` image. The suite images it references are tracked in [#2](https://github.com/smk762/argus-halo/issues/2).
+
 ## Security
 
 **Blocker before DNS points here: [argus-curator#3](https://github.com/smk762/argus-curator/issues/3).**

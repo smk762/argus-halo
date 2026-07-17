@@ -46,8 +46,8 @@ write_files:
             - caddy_data:/data
 
         frontend:
-          # TODO: point at a built image; argus-vision-demo builds from ./frontend.
-          image: ghcr.io/smk762/argus-vision-demo:latest
+          # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
+          image: ghcr.io/smk762/argus-studio:latest
           restart: unless-stopped
           environment:
             NEXT_PUBLIC_API_URL: "https://${domain}"
