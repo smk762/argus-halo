@@ -47,6 +47,8 @@ write_files:
 
         frontend:
           # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
+          # Stays :latest until studio publishes a release (argus-studio#49 / argus-halo#2),
+          # then pin like the others.
           image: ghcr.io/smk762/argus-studio:latest
           restart: unless-stopped
           environment:
@@ -57,14 +59,16 @@ write_files:
         lens:
           # Replay tier: reads recorded captions out of the lineage store
           # instead of loading a model. No GPU on this box by design.
-          image: ghcr.io/smk762/argus-lens:latest
+          image: ghcr.io/smk762/argus-lens:0.4.0
           restart: unless-stopped
           env_file: /opt/argus/.env
           command: ["argus-lens", "serve", "--cors", "--port", "8100"]
 
         curator:
           # [server] only -- the gpu extra is for detectors/embeddings we don't run here.
-          image: ghcr.io/smk762/argus-curator:latest
+          # Pinned to >=0.2.0: server-side scan/export path containment (argus-halo#1).
+          # ARGUS_CURATOR_SCAN_ROOT (set in .env) is what arms that containment.
+          image: ghcr.io/smk762/argus-curator:0.2.0
           restart: unless-stopped
           env_file: /opt/argus/.env
           command: ["argus-curator", "serve", "--cors", "--port", "8101"]
