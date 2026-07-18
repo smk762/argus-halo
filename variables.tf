@@ -83,3 +83,29 @@ variable "tape_dump_url" {
   default     = ""
   sensitive   = true
 }
+
+# --- lens captioning ---------------------------------------------------------
+
+variable "lens_caption_api_key" {
+  description = <<-EOT
+    API key for the OpenAI-compatible endpoint lens captions through (default
+    Cerebras). Required for lens to caption; set as a Sensitive workspace
+    variable. Interim until argus-lens#45 (lineage replay) removes the need for
+    a live model. See README > Environment.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "lens_caption_base_url" {
+  description = "OpenAI-compatible endpoint lens captions through. Default: Cerebras."
+  type        = string
+  default     = "https://api.cerebras.ai/v1"
+}
+
+variable "lens_caption_model" {
+  description = "Vision-capable model id at lens_caption_base_url. Cerebras: gemma-4-31b."
+  type        = string
+  default     = "gemma-4-31b"
+}

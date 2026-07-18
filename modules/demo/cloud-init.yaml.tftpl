@@ -6,16 +6,41 @@ packages:
   - curl
 
 write_files:
+  # Single source of truth for this host's runtime config, rendered by
+  # Terraform and read by each service via `env_file`. See README > Environment.
   - path: /opt/argus/.env
     permissions: "0600"
     content: |
+      # --- argus-curator (server) -------------------------------------------
+      # scan/thumb/upload paths resolve under the scan root; server-side
+      # containment (argus-curator >=0.2.0, argus-halo#1). The export root is
+      # deliberately left unset so /export refuses on this public host.
+      ARGUS_CURATOR_SCAN_ROOT=${curator_scan_root}
+      ARGUS_CURATOR_EXPORT_ROOT=${curator_export_root}
+      # curate -> caption handoff target (compose DNS, server-to-server).
+      ARGUS_LENS_URL=http://lens:8100
+
+      # --- argus-lens (captioning) ------------------------------------------
+      # No GPU on this box and lens 0.4.0 has no lineage-replay backend
+      # (argus-lens#45), so caption through an OpenAI-compatible vision endpoint
+      # (default: Cerebras gemma-4-31b). Switch to the replay backend when #45
+      # lands and CORTEX_* below start being consumed.
+      ARGUS_BACKEND=openai-compat
+      ARGUS_OPENAI_COMPAT_BASE_URL=${lens_caption_base_url}
+      ARGUS_OPENAI_COMPAT_MODEL=${lens_caption_model}
+      ARGUS_OPENAI_COMPAT_API_KEY=${lens_caption_api_key}
+
+      # --- cortex store contract (RESERVED, not yet consumed) ---------------
+      # The stores exist on core, but lens/curator 0.x do not read CORTEX_* yet
+      # (argus-lens#45). Wired now so replay + lineage capture land without
+      # re-plumbing; inert until a consumer ships. See README > Environment.
       CORTEX_PG_URL=${cortex_pg_url}
       CORTEX_QDRANT_URL=${cortex_qdrant_url}
       CORTEX_S3_ENDPOINT=${cortex_s3_endpoint}
       CORTEX_S3_BUCKET=${cortex_s3_bucket}
       CORTEX_S3_ACCESS_KEY=${minio_access_key}
       CORTEX_S3_SECRET_KEY=${minio_secret_key}
-      ARGUS_CURATOR_SCAN_ROOT=${curator_scan_root}
+      CORTEX_S3_REGION=us-east-1
 
   - path: /opt/argus/Caddyfile
     content: |
@@ -47,18 +72,21 @@ write_files:
 
         frontend:
           # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
-          # Stays :latest until studio publishes a release (argus-studio#49 / argus-halo#2),
-          # then pin like the others.
+          # Stays :latest until studio publishes a release (argus-halo#2), then
+          # pin like the others.
+          #
+          # No `environment:` here on purpose: studio's NEXT_PUBLIC_* are inlined
+          # at BUILD time, so setting them at runtime is inert (argus-studio#56).
+          # The published image must be built for this origin, or -- preferred --
+          # made runtime-configurable / same-origin (it already sits behind Caddy
+          # on one origin here). Tracked in argus-studio#56.
           image: ghcr.io/smk762/argus-studio:latest
           restart: unless-stopped
-          environment:
-            NEXT_PUBLIC_API_URL: "https://${domain}"
-            NEXT_PUBLIC_CURATOR_URL: "https://${domain}"
-            NEXT_PUBLIC_CURATOR_UI_MODE: demo
 
         lens:
-          # Replay tier: reads recorded captions out of the lineage store
-          # instead of loading a model. No GPU on this box by design.
+          # No GPU on this box by design. Backend + endpoint come from .env
+          # (ARGUS_BACKEND=openai-compat -> Cerebras). The intended end state is
+          # a lineage-replay backend that needs no live model (argus-lens#45).
           image: ghcr.io/smk762/argus-lens:0.4.0
           restart: unless-stopped
           env_file: /opt/argus/.env

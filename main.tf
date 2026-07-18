@@ -80,12 +80,18 @@ module "demo" {
   domain      = var.domain
 
   # The whole point of the split: cortex's contract, handed over as outputs.
+  # Reserved: lens/curator 0.x don't consume CORTEX_* yet (argus-lens#45).
   cortex_pg_url      = module.core.cortex_pg_url
   cortex_qdrant_url  = module.core.cortex_qdrant_url
   cortex_s3_endpoint = module.core.cortex_s3_endpoint
   cortex_s3_bucket   = module.core.cortex_s3_bucket
   minio_access_key   = module.core.minio_access_key
   minio_secret_key   = random_password.minio.result
+
+  # Captioning backend (interim, until lens replay lands -- argus-lens#45).
+  lens_caption_api_key  = var.lens_caption_api_key
+  lens_caption_base_url = var.lens_caption_base_url
+  lens_caption_model    = var.lens_caption_model
 
   depends_on = [hcloud_network_subnet.argus]
 }

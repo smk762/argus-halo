@@ -67,6 +67,7 @@ Defence in depth still sits around it, none sufficient alone:
 
 - `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container.
 - The demo tier holds no database; the stores are private-network only.
+- The two keyed/backed endpoints (`/caption/*`, `/scan/*`) are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP) so a public client can't drain the metered captioning key. In the default `demo` UI mode these paths aren't even exercised — see [Environment](#environment).
 
 These are containment, not authorization — the server-side enforcement is what actually closes the hole. A read-only mount limits the blast radius of a filesystem read, it doesn't prevent one, and `NEXT_PUBLIC_CURATOR_UI_MODE=demo` is a frontend flag anyone can bypass with curl.
 
@@ -89,6 +90,84 @@ ssh -L 9090:10.0.1.10:9090 root@<core ip>       # then Prometheus at http://loca
 
 Grafana ships with the Prometheus datasource auto-provisioned; add dashboards to taste.
 
+## Environment
+
+Config reaches the containers by one path on **both** tiers: Terraform renders a
+single `/opt/argus/.env` per host (from HCP workspace variables, `random_password`
+resources, and derived values), cloud-init writes it `0600`, and every service
+that needs config loads it with Compose `env_file`. No per-service inline secrets,
+one file to reason about per host. To add a key: declare the Terraform variable,
+thread it into that tier's `templatefile(...)`, and add the line to the `.env`
+block. Where each value comes from:
+
+- **Sensitive / operator-supplied** → a **Sensitive** HCP workspace variable.
+- **Generated** → a `random_password` resource (never printed, never committed).
+- **Static** → a `default` in code, or a literal in the template.
+
+### core — `/opt/argus/.env`
+
+| Key | Consumer | Source | Default | Sensitive |
+|---|---|---|---|---|
+| `POSTGRES_USER` | postgres | code | `argus` | no |
+| `POSTGRES_PASSWORD` | postgres, postgres-exporter | `random_password` | generated | **yes** |
+| `POSTGRES_DB` | postgres | code | `argus` | no |
+| `MINIO_ROOT_USER` | minio | `minio_access_key` | `argus` | no |
+| `MINIO_ROOT_PASSWORD` | minio | `random_password` | generated | **yes** |
+| `MINIO_PROMETHEUS_AUTH_TYPE` | minio | code | `public` | no |
+| `DATA_SOURCE_NAME` | postgres-exporter | derived (embeds pw) | — | **yes** |
+| `GF_SERVER_HTTP_PORT` | grafana | `grafana_port` | `3000` | no |
+| `GF_SECURITY_ADMIN_PASSWORD` | grafana | `random_password` | generated | **yes** |
+| `GF_USERS_ALLOW_SIGN_UP` | grafana | code | `false` | no |
+| `GF_AUTH_ANONYMOUS_ENABLED` | grafana | code | `false` | no |
+
+### demo — `/opt/argus/.env`
+
+| Key | Consumer | Source | Default | Sensitive |
+|---|---|---|---|---|
+| `ARGUS_CURATOR_SCAN_ROOT` | curator | `curator_scan_root` | `/srv/argus/samples` | no |
+| `ARGUS_CURATOR_EXPORT_ROOT` | curator | `curator_export_root` | `""` → `/export` refused | no |
+| `ARGUS_LENS_URL` | curator | code | `http://lens:8100` | no |
+| `ARGUS_BACKEND` | lens | code | `openai-compat` | no |
+| `ARGUS_OPENAI_COMPAT_BASE_URL` | lens | `lens_caption_base_url` | `https://api.cerebras.ai/v1` | no |
+| `ARGUS_OPENAI_COMPAT_MODEL` | lens | `lens_caption_model` | `gemma-4-31b` | no |
+| `ARGUS_OPENAI_COMPAT_API_KEY` | lens | `lens_caption_api_key` (**HCP**) | `""` → **required to caption** | **yes** |
+| `CORTEX_PG_URL` | *reserved* | core output | derived | **yes** |
+| `CORTEX_QDRANT_URL` | *reserved* | core output | derived | no |
+| `CORTEX_S3_ENDPOINT` | *reserved* | core output | derived | no |
+| `CORTEX_S3_BUCKET` | *reserved* | core output | `argus-tape` | no |
+| `CORTEX_S3_ACCESS_KEY` | *reserved* | `minio_access_key` | `argus` | no |
+| `CORTEX_S3_SECRET_KEY` | *reserved* | `random_password` | generated | **yes** |
+| `CORTEX_S3_REGION` | *reserved* | code | `us-east-1` | no |
+
+**Two honest caveats, both tracked:**
+
+- **`CORTEX_*` is reserved, not yet consumed.** The pinned `argus-lens 0.4.0` and
+  `argus-curator 0.2.0` images read *none* of the `CORTEX_*` variables — so the
+  core store tier is provisioned but idle from the app tier's point of view. It's
+  wired now so a lineage-replay backend drops in without re-plumbing
+  ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)).
+- **lens captions via a live endpoint, not replay.** There's no GPU here and no
+  replay backend yet, so lens is pointed at an OpenAI-compatible vision model
+  (Cerebras `gemma-4-31b`, the only image-capable model there). Set
+  `lens_caption_api_key` in HCP or lens returns `401` on every caption. This is
+  the interim until [argus-lens#45](https://github.com/smk762/argus-lens/issues/45).
+
+### frontend (argus-studio) — build-time, **not** in `.env`
+
+studio's `NEXT_PUBLIC_*` are inlined into the client bundle **at build time**, so
+they cannot be set from the demo host's `.env` — the `frontend` service carries no
+runtime `environment:` on purpose. A published image must be built for its origin
+(a footgun for a public image), so the demo tracks making studio runtime-
+configurable / same-origin — it already sits behind Caddy on one origin —
+in [argus-studio#56](https://github.com/smk762/argus-studio/issues/56). The build
+args that matter when publishing (see [#2](https://github.com/smk762/argus-halo/issues/2)):
+
+| Build arg | Purpose | Demo value |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | lens API, from the browser | `https://argus.dragonhound.dev` (or same-origin) |
+| `NEXT_PUBLIC_CURATOR_URL` | curator API, from the browser | same |
+| `NEXT_PUBLIC_CURATOR_UI_MODE` | `demo` (bundled sample) or `live` | `demo` |
+
 ## The tape
 
 Not yet automated. Current shape:
@@ -103,7 +182,8 @@ Steps 2–4 want a `make tape` target. Qdrant snapshot and MinIO restore aren't 
 ## Known gaps
 
 - `server_type = "cx23"` — Hetzner renamed the plan line in June 2026 and the API needs auth to enumerate. If `plan` rejects it, check the Console for the exact identifier.
-- The frontend image (`argus-studio`) isn't published to GHCR yet, so the demo can't fully boot until it is ([#2](https://github.com/smk762/argus-halo/issues/2)). `curator` and `lens` are pinned to released tags.
+- The frontend image (`argus-studio`) isn't published to GHCR yet, so the demo can't fully boot until it is ([#2](https://github.com/smk762/argus-halo/issues/2)), and its URLs are baked at build time until it's made runtime-configurable ([argus-studio#56](https://github.com/smk762/argus-studio/issues/56)). `curator` and `lens` are pinned to released tags.
+- **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
 - CI runs `fmt -check` + `validate` on every push and PR. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
 
 ## License

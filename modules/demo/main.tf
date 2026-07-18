@@ -12,14 +12,18 @@ resource "hcloud_server" "demo" {
   }
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    domain             = var.domain
-    cortex_pg_url      = var.cortex_pg_url
-    cortex_qdrant_url  = var.cortex_qdrant_url
-    cortex_s3_endpoint = var.cortex_s3_endpoint
-    cortex_s3_bucket   = var.cortex_s3_bucket
-    minio_access_key   = var.minio_access_key
-    minio_secret_key   = var.minio_secret_key
-    curator_scan_root  = var.curator_scan_root
+    domain                = var.domain
+    cortex_pg_url         = var.cortex_pg_url
+    cortex_qdrant_url     = var.cortex_qdrant_url
+    cortex_s3_endpoint    = var.cortex_s3_endpoint
+    cortex_s3_bucket      = var.cortex_s3_bucket
+    minio_access_key      = var.minio_access_key
+    minio_secret_key      = var.minio_secret_key
+    curator_scan_root     = var.curator_scan_root
+    curator_export_root   = var.curator_export_root
+    lens_caption_base_url = var.lens_caption_base_url
+    lens_caption_model    = var.lens_caption_model
+    lens_caption_api_key  = var.lens_caption_api_key
   })
 
   labels = {

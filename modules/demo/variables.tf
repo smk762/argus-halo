@@ -37,3 +37,35 @@ variable "curator_scan_root" {
   type        = string
   default     = "/srv/argus/samples"
 }
+
+variable "curator_export_root" {
+  description = <<-EOT
+    Root that curator /export destinations resolve under. Left empty on the
+    public host so /export refuses outright (read-only demo).
+  EOT
+  type        = string
+  default     = ""
+}
+
+# --- lens captioning backend -------------------------------------------------
+# lens 0.4.0 has no lineage-replay backend (argus-lens#45) and there is no GPU
+# here, so captions come from an OpenAI-compatible vision endpoint.
+
+variable "lens_caption_base_url" {
+  description = "OpenAI-compatible endpoint lens captions through. Default: Cerebras."
+  type        = string
+  default     = "https://api.cerebras.ai/v1"
+}
+
+variable "lens_caption_model" {
+  description = "Vision-capable model id at the endpoint. Cerebras: gemma-4-31b."
+  type        = string
+  default     = "gemma-4-31b"
+}
+
+variable "lens_caption_api_key" {
+  description = "API key for the captioning endpoint (e.g. Cerebras). Set in HCP."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

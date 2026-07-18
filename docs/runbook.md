@@ -30,6 +30,7 @@ variables.
 | Cloudflare zone ID | dragonhound.dev → Overview → API | `cloudflare_zone_id` |
 | SSH public key | your keypair (`ssh-keygen -t ed25519`) | `ssh_public_key` |
 | Your source IP | `curl -s ifconfig.me` then append `/32` | `admin_ip` |
+| Captioning API key | [Cerebras Cloud](https://cloud.cerebras.ai/) → API keys | `lens_caption_api_key` |
 
 ---
 
@@ -43,12 +44,15 @@ terraform login          # paste the token from app.terraform.io
 terraform init           # creates/attaches the argus-halo workspace
 ```
 
-Then in the HCP UI, workspace `argus-halo` → **Variables**, add the six inputs
-above as **Terraform variables**. Mark `hcloud_token` and `cloudflare_api_token`
-**Sensitive**. Confirm **Settings → General → Execution Mode = Remote**.
+Then in the HCP UI, workspace `argus-halo` → **Variables**, add the inputs above
+as **Terraform variables**. Mark `hcloud_token`, `cloudflare_api_token` and
+`lens_caption_api_key` **Sensitive**. Confirm **Settings → General → Execution
+Mode = Remote**.
 
-Everything else (`server_type`, `location`, `domain`, `image`, `network_zone`)
-has a working default; override only if you need to.
+Everything else (`server_type`, `location`, `domain`, `image`, `network_zone`,
+and the `lens_caption_*` endpoint/model) has a working default; override only if
+you need to. `lens_caption_api_key` has no default — without it lens returns
+`401` on every caption (see README > Environment).
 
 ---
 
@@ -67,10 +71,23 @@ Do not `apply` until all of these are true. The first three are hard gates.
 - [ ] **`server_type` is valid.** Hetzner renamed the CX plan line in
       June 2026. If `plan` rejects `cx23`, get the current identifier from the
       Console and set the `server_type` workspace variable.
-- [ ] Workspace variables are set with real values (Execution Mode = Remote).
+- [ ] Workspace variables are set with real values (Execution Mode = Remote),
+      including `lens_caption_api_key` as **Sensitive** (a Cerebras key). Without
+      it lens returns `401` on every caption.
 - [ ] Cloudflare zone SSL mode is **Full (strict)** (Caddy holds a real cert at
       the origin).
 - [ ] `terraform plan` output has been reviewed and matches expectations.
+
+**Public exposure — keep the crowd on `demo` mode.** The published `argus-studio`
+image should be built in `demo` UI mode (studio's default): the frontend serves a
+bundled sample and makes **no** live calls to lens/curator, so the metered
+captioning key is untouched. Only `live` mode drives real scans/captions, which
+(a) meters against the Cerebras key and (b) exposes `/scan/*` publicly — reserve
+it for your own walkthroughs or a tiny curated set until replay lands
+([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). Either way a
+Cloudflare rate-limit rule (`waf.tf`) caps `/caption/*` and `/scan/*` at 15
+req/min per IP so a single client can't drain the key. `demo`/`live` is baked at
+studio build time — see README > Environment.
 
 ---
 
@@ -223,9 +240,27 @@ and update the workspace variable.
 | TLS handshake errors | zone not on Full (strict) | set Cloudflare SSL mode to Full (strict) |
 | Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
 | Restore didn't run | marker present or no URL | remove `.tape-restored`, set `tape_dump_url` |
+| SSH/Grafana time out from your machine | your ISP rotated your IP; `admin_ip` no longer matches | see *Recover access after an IP change* below |
 
 Inspect a host's first-boot log:
 
 ```bash
 ssh root@<ip> 'cat /var/log/cloud-init-output.log'
 ```
+
+### Recover access after an IP change
+
+`admin_ip` gates SSH (both hosts) and Grafana (core) at the Hetzner firewall.
+If your ISP hands you a new address you'll simply time out. You are **not**
+locked out of fixing it — `apply` drives the Hetzner API from HCP's runners, not
+over SSH, so your current IP is irrelevant to running it.
+
+1. Get the new address: `curl -s ifconfig.me`.
+2. HCP UI → workspace `argus-halo` → **Variables** → set `admin_ip` to
+   `<new-ip>/32`.
+3. **Start a new run** (or `terraform apply` locally).
+
+This is an **in-place firewall update** — `source_ips` only. `admin_ip` is not
+part of cloud-init, so nothing is rebuilt and there is no data loss; access
+returns within seconds. Only the two `hcloud_firewall` resources should show as
+changed in the plan.

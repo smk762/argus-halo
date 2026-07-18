@@ -7,6 +7,33 @@ packages:
   - curl
 
 write_files:
+  # Single source of truth for this host's runtime config, rendered by
+  # Terraform. Every service that needs config reads it via `env_file` -- the
+  # same pattern as the demo tier. See README > Environment.
+  - path: /opt/argus/.env
+    permissions: "0600"
+    content: |
+      # --- postgres (lineage store) ---
+      POSTGRES_USER=argus
+      POSTGRES_PASSWORD=${postgres_password}
+      POSTGRES_DB=argus
+
+      # --- minio (blob store) ---
+      MINIO_ROOT_USER=${minio_access_key}
+      MINIO_ROOT_PASSWORD=${minio_secret_key}
+      # Serve the cluster metrics endpoint token-free so Prometheus can scrape
+      # it on the private network.
+      MINIO_PROMETHEUS_AUTH_TYPE=public
+
+      # --- postgres_exporter ---
+      DATA_SOURCE_NAME=postgresql://argus:${postgres_password}@postgres:5432/argus?sslmode=disable
+
+      # --- grafana ---
+      GF_SERVER_HTTP_PORT=${grafana_port}
+      GF_SECURITY_ADMIN_PASSWORD=${grafana_admin_password}
+      GF_USERS_ALLOW_SIGN_UP=false
+      GF_AUTH_ANONYMOUS_ENABLED=false
+
   - path: /opt/argus/compose.yaml
     permissions: "0600"
     content: |
@@ -17,10 +44,7 @@ write_files:
           image: postgres:16
           restart: unless-stopped
           ports: ["${private_ip}:5432:5432"]
-          environment:
-            POSTGRES_USER: argus
-            POSTGRES_PASSWORD: "${postgres_password}"
-            POSTGRES_DB: argus
+          env_file: /opt/argus/.env
           volumes: ["/opt/argus/data/postgres:/var/lib/postgresql/data"]
           healthcheck:
             test: ["CMD-SHELL", "pg_isready -U argus"]
@@ -38,12 +62,7 @@ write_files:
           restart: unless-stopped
           command: server /data --console-address ":9001"
           ports: ["${private_ip}:9000:9000"]
-          environment:
-            MINIO_ROOT_USER: "${minio_access_key}"
-            MINIO_ROOT_PASSWORD: "${minio_secret_key}"
-            # Serve the cluster metrics endpoint without a bearer token so
-            # Prometheus can scrape it on the private network.
-            MINIO_PROMETHEUS_AUTH_TYPE: public
+          env_file: /opt/argus/.env
           volumes: ["/opt/argus/data/minio:/data"]
 
         # --- monitoring ---------------------------------------------------
@@ -64,8 +83,7 @@ write_files:
         postgres-exporter:
           image: quay.io/prometheuscommunity/postgres-exporter:latest
           restart: unless-stopped
-          environment:
-            DATA_SOURCE_NAME: "postgresql://argus:${postgres_password}@postgres:5432/argus?sslmode=disable"
+          env_file: /opt/argus/.env
           depends_on: [postgres]
 
         prometheus:
@@ -80,12 +98,10 @@ write_files:
         grafana:
           image: grafana/grafana:latest
           restart: unless-stopped
+          # Host port is a compose-level value, so it stays templated by
+          # Terraform; the in-container port comes from GF_SERVER_HTTP_PORT in .env.
           ports: ["${grafana_port}:${grafana_port}"]
-          environment:
-            GF_SERVER_HTTP_PORT: "${grafana_port}"
-            GF_SECURITY_ADMIN_PASSWORD: "${grafana_admin_password}"
-            GF_USERS_ALLOW_SIGN_UP: "false"
-            GF_AUTH_ANONYMOUS_ENABLED: "false"
+          env_file: /opt/argus/.env
           volumes:
             - grafana_data:/var/lib/grafana
             - /opt/argus/grafana/provisioning:/etc/grafana/provisioning:ro
