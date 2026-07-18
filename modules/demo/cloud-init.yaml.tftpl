@@ -75,6 +75,19 @@ write_files:
           volumes:
             - /srv/argus/samples:${curator_scan_root}:ro
 
+        # Host metrics for the demo tier. Listens on :9100 across interfaces but
+        # the public interface is default-deny inbound (no firewall rule opens
+        # 9100), so only core's Prometheus reaches it over the private network.
+        node-exporter:
+          image: prom/node-exporter:latest
+          restart: unless-stopped
+          network_mode: host
+          pid: host
+          command:
+            - "--path.rootfs=/host"
+            - "--web.listen-address=:9100"
+          volumes: ["/:/host:ro,rslave"]
+
       volumes:
         caddy_data:
 

@@ -23,6 +23,17 @@ output "tape_bucket" {
   value       = cloudflare_r2_bucket.tape.name
 }
 
+output "grafana_url" {
+  description = "Grafana, reachable from the admin IP. Or tunnel: ssh -L 3000:localhost:3000 root@core."
+  value       = module.core.grafana_endpoint
+}
+
+output "grafana_password" {
+  description = "Grafana admin password (user: admin). Read with: terraform output -raw grafana_password."
+  value       = random_password.grafana.result
+  sensitive   = true
+}
+
 output "ssh_core" {
   value = "ssh root@${module.core.public_ipv4}"
 }

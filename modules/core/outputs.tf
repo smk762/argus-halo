@@ -26,3 +26,8 @@ output "minio_access_key" {
 output "public_ipv4" {
   value = hcloud_server.core.ipv4_address
 }
+
+output "grafana_endpoint" {
+  description = "Grafana URL, reachable from the admin IP (or via SSH tunnel to core)."
+  value       = "http://${hcloud_server.core.ipv4_address}:${var.grafana_port}"
+}

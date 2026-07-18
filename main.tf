@@ -34,6 +34,13 @@ resource "random_password" "minio" {
   special = false
 }
 
+# Grafana admin login. Default admin/admin is never acceptable on a box whose
+# dashboard is reachable from the admin IP.
+resource "random_password" "grafana" {
+  length  = 24
+  special = false
+}
+
 module "core" {
   source = "./modules/core"
 
@@ -49,6 +56,11 @@ module "core" {
   postgres_password = random_password.postgres.result
   minio_secret_key  = random_password.minio.result
   tape_dump_url     = var.tape_dump_url
+
+  # Monitoring: Prometheus/Grafana live here; Prometheus also scrapes the demo
+  # tier's node_exporter over the private network.
+  grafana_admin_password = random_password.grafana.result
+  demo_private_ip        = local.demo_private_ip
 
   # The server's network block fails if the subnet isn't up yet.
   depends_on = [hcloud_network_subnet.argus]

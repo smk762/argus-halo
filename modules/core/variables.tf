@@ -39,3 +39,21 @@ variable "tape_dump_url" {
   default   = ""
   sensitive = true
 }
+
+# --- monitoring --------------------------------------------------------------
+
+variable "demo_private_ip" {
+  description = "Demo tier's private address. Prometheus scrapes its node_exporter here."
+  type        = string
+}
+
+variable "grafana_admin_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "grafana_port" {
+  description = "Port Grafana listens on. Opened on the public interface to admin_ip only."
+  type        = number
+  default     = 3000
+}

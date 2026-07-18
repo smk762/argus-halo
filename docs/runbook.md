@@ -138,6 +138,20 @@ ssh root@$(terraform output -raw demo_ipv4) \
 
 **SSH is locked to your IP** — from any other address, port 22 should time out.
 
+**Monitoring is up.** Grafana answers from your admin IP; Prometheus targets are healthy:
+
+```bash
+curl -fsSI "$(terraform output -raw grafana_url)" | head -n 1        # expect 200/302
+terraform output -raw grafana_password                              # login: admin / <this>
+
+# Prometheus stays private — tunnel, then check every target is "up":
+CORE=$(terraform output -raw core_ipv4)
+ssh -fN -L 9090:10.0.1.10:9090 root@"$CORE"
+curl -fsS localhost:9090/api/v1/targets | grep -o '"health":"[a-z]*"' | sort | uniq -c
+```
+
+Expect the `node` (core + demo), `postgres`, `qdrant`, and `minio` jobs all `up`.
+
 ---
 
 ## 5. Seed the tape (optional)
