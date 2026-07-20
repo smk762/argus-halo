@@ -62,8 +62,10 @@ module "core" {
   grafana_admin_password = random_password.grafana.result
   demo_private_ip        = local.demo_private_ip
 
-  # The server's network block fails if the subnet isn't up yet.
-  depends_on = [hcloud_network_subnet.argus]
+  # The server's network block fails if the subnet isn't up yet. The preflight
+  # gate (preflight.tf) already fails the whole plan before anything is created,
+  # so naming it here is ordering clarity, not the gate itself.
+  depends_on = [hcloud_network_subnet.argus, data.hcloud_location.target]
 }
 
 module "demo" {
@@ -93,5 +95,5 @@ module "demo" {
   lens_caption_base_url = var.lens_caption_base_url
   lens_caption_model    = var.lens_caption_model
 
-  depends_on = [hcloud_network_subnet.argus]
+  depends_on = [hcloud_network_subnet.argus, data.hcloud_location.target]
 }

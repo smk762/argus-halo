@@ -58,7 +58,9 @@ you need to. `lens_caption_api_key` has no default — without it lens returns
 
 ## 2. Pre-deploy checklist
 
-Do not `apply` until all of these are true. The first three are hard gates.
+Do not `apply` until all of these are true. The first two are hard gates.
+`server_type` is no longer on this list — `plan` now checks it against live
+Hetzner stock and names the working alternatives (see preflight.tf).
 
 - [ ] **Curator enforces the scan root server-side.** `/scan/folder`,
       `/scan/folder/stream` and `/export` must reject paths outside
@@ -68,9 +70,6 @@ Do not `apply` until all of these are true. The first three are hard gates.
 - [ ] **Container images exist.** `frontend`, `curator`, `lens` reference
       `ghcr.io/smk762/argus-*:latest`. Confirm those tags are published and
       pullable, or the demo host boots into image-pull errors.
-- [ ] **`server_type` is valid.** Hetzner renamed the CX plan line in
-      June 2026. If `plan` rejects `cx23`, get the current identifier from the
-      Console and set the `server_type` workspace variable.
 - [ ] Workspace variables are set with real values (Execution Mode = Remote),
       including `lens_caption_api_key` as **Sensitive** (a Cerebras key). Without
       it lens returns `401` on every caption.
@@ -235,7 +234,7 @@ and update the workspace variable.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
-| `plan`: invalid `server_type` | Hetzner renamed the plan | set `server_type` var to current id |
+| `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
 | Demo returns 502 | app container down or image missing | `docker compose ps`/`logs` on demo; confirm GHCR tags |
 | TLS handshake errors | zone not on Full (strict) | set Cloudflare SSL mode to Full (strict) |
 | Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
