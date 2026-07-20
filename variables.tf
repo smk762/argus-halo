@@ -61,7 +61,13 @@ variable "network_zone" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type. cx23 = 2 vCPU / 4 GB, EUR 5.49/mo as of 2026-06-15."
+  description = <<-EOT
+    Hetzner server type for both tiers. cx23 is the smallest of the
+    cost-optimized shared-x86 line Hetzner introduced in October 2025.
+    Checked against live per-location stock at plan time -- a retired or
+    sold-out identifier fails the plan and lists what IS available in
+    var.location, so there is nothing to look up by hand. See preflight.tf.
+  EOT
   type        = string
   default     = "cx23"
 }

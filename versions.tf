@@ -13,8 +13,11 @@ terraform {
 
   required_providers {
     hcloud = {
-      source  = "hetznercloud/hcloud"
-      version = "~> 1.48"
+      source = "hetznercloud/hcloud"
+      # >= 1.61 for per-location availability on hcloud_server_types, which the
+      # preflight gate reads (it landed there when the deprecated datacenters
+      # data source stopped being the only source). See preflight.tf.
+      version = "~> 1.61"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"

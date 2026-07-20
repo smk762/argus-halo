@@ -181,7 +181,6 @@ Steps 2–4 want a `make tape` target. Qdrant snapshot and MinIO restore aren't 
 
 ## Known gaps
 
-- `server_type = "cx23"` — Hetzner renamed the plan line in June 2026 and the API needs auth to enumerate. If `plan` rejects it, check the Console for the exact identifier.
 - The frontend image (`argus-studio`) isn't published to GHCR yet, so the demo can't fully boot until it is ([#2](https://github.com/smk762/argus-halo/issues/2)), and its URLs are baked at build time until it's made runtime-configurable ([argus-studio#56](https://github.com/smk762/argus-studio/issues/56)). `curator` and `lens` are pinned to released tags.
 - **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
 - CI runs `fmt -check` + `validate` on every push and PR. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
