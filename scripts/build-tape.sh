@@ -50,7 +50,7 @@ SRC_S3_ACCESS_KEY="${SRC_S3_ACCESS_KEY:-${CORTEX_S3_ACCESS_KEY:-minioadmin}}"
 SRC_S3_SECRET_KEY="${SRC_S3_SECRET_KEY:-${CORTEX_S3_SECRET_KEY:-minioadmin}}"
 SRC_S3_BUCKET="${SRC_S3_BUCKET:-${CORTEX_S3_BUCKET:-argus-tape}}"
 OUT="${OUT:-tape.tar.zst}"
-MC_IMAGE="${MC_IMAGE:-minio/mc:latest}"
+MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}"
 
 # Trim any trailing slash so URL joins are clean.
 SRC_QDRANT_URL="${SRC_QDRANT_URL%/}"
@@ -69,10 +69,14 @@ mkdir -p "$work/qdrant" "$work/blobs"
 
 # --- 1. lineage (Postgres) ---------------------------------------------------
 # Plain SQL, no ownership/ACLs -- restore replays it into a fresh `argus` db that
-# has no matching roles. Schema + data in one file (cortex's ensure_schema is
-# CREATE TABLE IF NOT EXISTS, so replaying the DDL is harmless).
-say "pg_dump lineage  <-  ${SRC_PG_URL%%\?*}"
-pg_dump "$SRC_PG_URL" --no-owner --no-privileges --file "$work/lineage.sql"
+# has no matching roles. `--clean --if-exists` makes the dump DROP each object
+# before recreating it, so a re-seed (or a retry after a partially-failed
+# restore) replays cleanly instead of erroring on existing tables / doubling
+# rows. Restore runs it under `psql -v ON_ERROR_STOP=1`, so a genuine failure
+# aborts loudly rather than being silently recorded as a successful seed.
+# Redact any user:pass@ before echoing the URL so a real password never hits the log.
+say "pg_dump lineage  <-  $(printf '%s' "$SRC_PG_URL" | sed -E 's#://[^@/]+@#://***@#')"
+pg_dump "$SRC_PG_URL" --no-owner --no-privileges --clean --if-exists --file "$work/lineage.sql"
 # Count actual data rows, not statements: pg_dump emits a COPY block (rows
 # between "COPY ... FROM stdin;" and the "\." terminator), plus any INSERTs.
 pg_rows="$(awk '
@@ -92,14 +96,17 @@ if [ -z "$collections" ]; then
   warn "no Qdrant collections found -- tape will carry no vectors"
 fi
 qdrant_count=0
-for c in $collections; do
+# Iterate names line-by-line: a collection name with a space or glob metachar
+# must not be word-split or globbed into a bad request (`for c in $collections`).
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
   snap="$(curl -fsS -X POST "$SRC_QDRANT_URL/collections/$c/snapshots" | jq -r '.result.name')"
   [ -n "$snap" ] && [ "$snap" != "null" ] || die "Qdrant returned no snapshot name for '$c'"
   curl -fsS "$SRC_QDRANT_URL/collections/$c/snapshots/$snap" -o "$work/qdrant/$c.snapshot"
   curl -fsS -X DELETE "$SRC_QDRANT_URL/collections/$c/snapshots/$snap" >/dev/null || true
   say "  captured $c"
   qdrant_count=$((qdrant_count + 1))
-done
+done <<< "$collections"
 
 # --- 3. blobs (MinIO / S3) ---------------------------------------------------
 # `mc mirror` the whole bucket into blobs/. Run mc from its own image so the host
@@ -111,6 +118,13 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e MC_CONFIG_DIR=/tmp/
   -e SRC_S3_ENDPOINT -e SRC_S3_ACCESS_KEY -e SRC_S3_SECRET_KEY -e SRC_S3_BUCKET \
   -v "$work/blobs:/blobs" --entrypoint sh "$MC_IMAGE" -ec '
     mc alias set src "$SRC_S3_ENDPOINT" "$SRC_S3_ACCESS_KEY" "$SRC_S3_SECRET_KEY" >/dev/null
+    # Prove the endpoint is reachable with these creds before concluding "no
+    # blobs": a failed bucket LIST is a connection/auth error and must abort, not
+    # silently pack an empty tape.
+    if ! mc ls src >/dev/null; then
+      echo "cannot reach source S3 at $SRC_S3_ENDPOINT -- bad endpoint or credentials" >&2
+      exit 1
+    fi
     if mc ls "src/$SRC_S3_BUCKET" >/dev/null 2>&1; then
       mc mirror --overwrite "src/$SRC_S3_BUCKET" /blobs
     else
@@ -160,7 +174,17 @@ docker run --rm \
     mc alias set r2 "$R2_ENDPOINT" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" >/dev/null
     mc mb --ignore-existing "r2/$R2_BUCKET" >/dev/null
     mc cp /tape.tar.zst "r2/$R2_BUCKET/tape.tar.zst"
+    # Capture then require a non-empty URL: set -e aborts if mc share fails, and
+    # the emptiness check catches a parse miss (an mc output-format change) so a
+    # broken publish fails loudly instead of printing nothing and exiting 0.
+    raw="$(mc share download --expire="$R2_URL_EXPIRY" "r2/$R2_BUCKET/tape.tar.zst")"
+    url="$(printf "%s\n" "$raw" | sed -n "s/^Share: //p")"
+    if [ -z "$url" ]; then
+      echo "could not parse a presigned URL from mc share output:" >&2
+      printf "%s\n" "$raw" >&2
+      exit 1
+    fi
     echo
-    echo "Set this as the tape_dump_url workspace variable (expires in '"$R2_URL_EXPIRY"'):"
-    mc share download --expire="$R2_URL_EXPIRY" "r2/$R2_BUCKET/tape.tar.zst" | sed -n "s/^Share: //p"
+    echo "Set this as the tape_dump_url workspace variable (expires in $R2_URL_EXPIRY):"
+    printf "%s\n" "$url"
   '

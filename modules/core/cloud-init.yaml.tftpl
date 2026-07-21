@@ -55,13 +55,16 @@ write_files:
             retries: 5
 
         qdrant:
-          image: qdrant/qdrant:latest
+          # Pinned: a Qdrant snapshot only restores to the SAME minor version, so
+          # this must match the qdrant the tape was built against (build-tape.sh).
+          image: qdrant/qdrant:v1.18.3
           restart: unless-stopped
           ports: ["${private_ip}:6333:6333"]
           volumes: ["/opt/argus/data/qdrant:/qdrant/storage"]
 
         minio:
-          image: minio/minio:latest
+          # Pinned so first-boot restore behaves like the build/test environment.
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
           restart: unless-stopped
           command: server /data --console-address ":9001"
           ports: ["${private_ip}:9000:9000"]
@@ -172,8 +175,10 @@ write_files:
 
       # --- lineage (Postgres) ---
       until pg_isready -h ${private_ip} -U argus -q; do sleep 2; done
+      # ON_ERROR_STOP: a failed/partial load must abort (set -e) BEFORE the marker
+      # is written, so a broken restore is retried, not recorded as success.
       psql "postgresql://argus:${postgres_password}@${private_ip}:5432/argus" \
-        -f /opt/argus/tape/lineage.sql
+        -v ON_ERROR_STOP=1 -f /opt/argus/tape/lineage.sql
 
       # --- vectors (Qdrant) ---
       # Each snapshot's filename is its collection name; upload recreates the
@@ -189,18 +194,18 @@ write_files:
       done
 
       # --- blobs (MinIO) ---
-      # mirror the archived objects into the bucket, via the mc image (no host
-      # client to install); --network host reaches the private-IP endpoint.
+      # Always ensure the bucket exists (even for a blob-less tape, so the first
+      # cortex write doesn't hit NoSuchBucket), then mirror the archived objects
+      # into it via the mc image (no host client to install); --network host
+      # reaches the private-IP endpoint. An empty blobs/ makes the mirror a no-op.
       until curl -fsS "http://${private_ip}:9000/minio/health/ready" >/dev/null; do sleep 2; done
-      if [ -n "$(find /opt/argus/tape/blobs -type f -print -quit 2>/dev/null)" ]; then
-        echo "restoring minio blobs into ${s3_bucket}"
-        docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
-          --entrypoint sh minio/mc:latest -ec '
-            mc alias set core "http://${private_ip}:9000" "${minio_access_key}" "${minio_secret_key}" >/dev/null
-            mc mb --ignore-existing "core/${s3_bucket}" >/dev/null
-            mc mirror --overwrite /blobs "core/${s3_bucket}"
-          '
-      fi
+      echo "restoring minio blobs into ${s3_bucket}"
+      docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
+        --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -ec '
+          mc alias set core "http://${private_ip}:9000" "${minio_access_key}" "${minio_secret_key}" >/dev/null
+          mc mb --ignore-existing "core/${s3_bucket}" >/dev/null
+          mc mirror --overwrite /blobs "core/${s3_bucket}"
+        '
 
       touch "$MARKER"
       rm -f tape.tar.zst
