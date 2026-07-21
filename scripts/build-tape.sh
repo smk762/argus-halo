@@ -16,8 +16,13 @@
 # canonical ones are image_embeddings / tagset_embeddings, but callers may use
 # others (argus-cortex/store/vector.py), so whatever is there is what we capture.
 #
-# Source stores default to a local dev suite and honour the CORTEX_* env (a
-# sourced .env just works). Override any of them:
+# Source stores default to a local dev suite and honour the CORTEX_* env. A bare
+# `source .env` does NOT survive `make` (only exported vars reach a recipe), so
+# point ENV_FILE at your cortex .env instead -- this script loads it with `set -a`:
+#
+#     ENV_FILE           dotenv to load first, e.g. ENV_FILE=../cortex/.env
+#
+# Override any individual value:
 #
 #     SRC_PG_URL         postgresql://argus:argus@localhost:5432/argus
 #     SRC_QDRANT_URL     http://localhost:6333
@@ -34,13 +39,24 @@
 #     R2_ACCOUNT_ID          Cloudflare account id (or set R2_ENDPOINT directly)
 #     R2_ACCESS_KEY_ID       R2 S3 API token
 #     R2_SECRET_ACCESS_KEY   R2 S3 API token secret
-#     R2_BUCKET              defaults to SRC_S3_BUCKET
+#     R2_BUCKET              defaults to the terraform `tape_bucket` output, else SRC_S3_BUCKET
 #     R2_URL_EXPIRY          presign lifetime, default 168h (7d, R2's max)
 #
 # Deliberately dependency-light: pg_dump, curl, jq, tar+zstd on the host, and
 # Docker for the MinIO client (the minio/mc image, so there's no `mc` to install).
 
 set -euo pipefail
+
+# Load a dotenv first if asked (e.g. cortex's .env). `make` passes only EXPORTED
+# vars to a recipe, so a bare `source .env && make tape` never reaches us; `set -a`
+# re-exports everything the file defines so CORTEX_*/SRC_* resolve as documented.
+if [ -n "${ENV_FILE:-}" ]; then
+  [ -f "$ENV_FILE" ] || { printf 'error: ENV_FILE not found: %s\n' "$ENV_FILE" >&2; exit 1; }
+  set -a
+  # shellcheck source=/dev/null
+  . "$ENV_FILE"
+  set +a
+fi
 
 # --- config ------------------------------------------------------------------
 SRC_PG_URL="${SRC_PG_URL:-${CORTEX_PG_URL:-postgresql://argus:argus@localhost:5432/argus}}"
@@ -69,7 +85,10 @@ mkdir -p "$work/qdrant" "$work/blobs"
 
 # --- 1. lineage (Postgres) ---------------------------------------------------
 # Plain SQL, no ownership/ACLs -- restore replays it into a fresh `argus` db that
-# has no matching roles. `--clean --if-exists` makes the dump DROP each object
+# has no matching roles. This captures the WHOLE database named in SRC_PG_URL --
+# that DB is the dedicated lineage store (POSTGRES_DB=argus) -- so point SRC_PG_URL
+# at the pipeline's argus DB and nothing unrelated rides along.
+# `--clean --if-exists` makes the dump DROP each object
 # before recreating it, so a re-seed (or a retry after a partially-failed
 # restore) replays cleanly instead of erroring on existing tables / doubling
 # rows. Restore runs it under `psql -v ON_ERROR_STOP=1`, so a genuine failure
@@ -164,7 +183,13 @@ EOF
   exit 0
 fi
 
-R2_BUCKET="${R2_BUCKET:-$SRC_S3_BUCKET}"
+# Default the R2 destination to the bucket Terraform provisioned -- what
+# `terraform output -raw tape_bucket` reports and the runbook tells you to use --
+# falling back to the source bucket name if terraform/state isn't reachable here.
+if [ -z "${R2_BUCKET:-}" ]; then
+  R2_BUCKET="$(terraform output -raw tape_bucket 2>/dev/null || true)"
+  R2_BUCKET="${R2_BUCKET:-$SRC_S3_BUCKET}"
+fi
 R2_URL_EXPIRY="${R2_URL_EXPIRY:-168h}"
 say "upload  ->  $R2_ENDPOINT/$R2_BUCKET/tape.tar.zst"
 docker run --rm \

@@ -179,7 +179,8 @@ DAG (Postgres), the vectors (Qdrant), and the blobs (MinIO), in one
 1. Run the real pipeline locally against the sample datasets; cortex records lineage.
 2. `make tape` — dumps Postgres, snapshots **every** Qdrant collection, mirrors the
    MinIO bucket, and packs `tape.tar.zst`. Point it at your local stores with
-   `SRC_*` (or a sourced cortex `.env` — it reads `CORTEX_*`); see the header of
+   `SRC_*`, or load a cortex `.env` with `ENV_FILE=path/to/.env make tape` (a bare
+   `source` won't survive `make`); see the header of
    [scripts/build-tape.sh](scripts/build-tape.sh).
 3. Upload to the R2 bucket this repo creates. `make tape` does this for you when
    the `R2_*` env is set (and prints a presigned URL); otherwise it stops at the

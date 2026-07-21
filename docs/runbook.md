@@ -183,7 +183,8 @@ Skip for an empty-store demo. To seed from a recorded pipeline run:
    That dumps Postgres, snapshots every Qdrant collection, mirrors the MinIO
    bucket, packs `tape.tar.zst`, uploads it to the bucket from `terraform output
    -raw tape_bucket`, and prints a presigned URL. Point it at non-default local
-   stores with `SRC_*` (see [scripts/build-tape.sh](../scripts/build-tape.sh)).
+   stores with `SRC_*`, or load a cortex `.env` with `ENV_FILE=...` — a bare
+   `source` won't survive `make` (see [scripts/build-tape.sh](../scripts/build-tape.sh)).
    Omit the `R2_*` vars to build the archive only and upload by hand.
 2. Set that presigned URL as the `tape_dump_url` workspace variable.
 3. Re-apply, or re-run the restore on core:

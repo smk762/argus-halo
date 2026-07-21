@@ -168,13 +168,25 @@ write_files:
       [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
       [ -z "${tape_dump_url}" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
 
+      # Bounded readiness wait: probe every 2s but give up after ~5min, so a store
+      # that never comes up fails the restore instead of hanging cloud-init forever.
+      wait_for() {  # wait_for <name> <probe cmd...>
+        local name="$1"; shift
+        local i=0
+        until "$@" >/dev/null 2>&1; do
+          i=$((i + 1))
+          [ "$i" -ge 150 ] && { echo "timed out waiting for $name to become ready" >&2; exit 1; }
+          sleep 2
+        done
+      }
+
       cd /opt/argus
       curl -fsSL "${tape_dump_url}" -o tape.tar.zst
       rm -rf /opt/argus/tape && mkdir -p /opt/argus/tape
       tar --zstd -xf tape.tar.zst -C /opt/argus/tape
 
       # --- lineage (Postgres) ---
-      until pg_isready -h ${private_ip} -U argus -q; do sleep 2; done
+      wait_for postgres pg_isready -h ${private_ip} -U argus -q
       # ON_ERROR_STOP: a failed/partial load must abort (set -e) BEFORE the marker
       # is written, so a broken restore is retried, not recorded as success.
       psql "postgresql://argus:${postgres_password}@${private_ip}:5432/argus" \
@@ -183,7 +195,7 @@ write_files:
       # --- vectors (Qdrant) ---
       # Each snapshot's filename is its collection name; upload recreates the
       # collection from it (priority=snapshot => snapshot data wins).
-      until curl -fsS "http://${private_ip}:6333/readyz" >/dev/null; do sleep 2; done
+      wait_for qdrant curl -fsS "http://${private_ip}:6333/readyz"
       for snap in /opt/argus/tape/qdrant/*.snapshot; do
         [ -e "$snap" ] || break
         col="$(basename "$snap" .snapshot)"
@@ -198,7 +210,7 @@ write_files:
       # cortex write doesn't hit NoSuchBucket), then mirror the archived objects
       # into it via the mc image (no host client to install); --network host
       # reaches the private-IP endpoint. An empty blobs/ makes the mirror a no-op.
-      until curl -fsS "http://${private_ip}:9000/minio/health/ready" >/dev/null; do sleep 2; done
+      wait_for minio curl -fsS "http://${private_ip}:9000/minio/health/ready"
       echo "restoring minio blobs into ${s3_bucket}"
       docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
         --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -ec '
@@ -208,7 +220,10 @@ write_files:
         '
 
       touch "$MARKER"
+      # Reclaim the extraction scratch (a full second copy of the blobs) now that
+      # the stores hold the data; the marker records completion.
       rm -f tape.tar.zst
+      rm -rf /opt/argus/tape
 
 runcmd:
   - [mkdir, -p, /opt/argus/data/postgres, /opt/argus/data/qdrant, /opt/argus/data/minio, /opt/argus/tape]
