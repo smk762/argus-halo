@@ -32,6 +32,12 @@
 #     SRC_S3_BUCKET      argus-tape
 #     OUT                ./tape.tar.zst
 #
+# A Qdrant snapshot only restores into the SAME minor version, so the build
+# refuses to pack a tape the demo could not restore. Escape hatch, if you have
+# moved the pin on both sides:
+#
+#     TAPE_QDRANT_MINOR  minor the restore side runs, default 1.18
+#
 # Upload to R2 is opt-in: set the R2_* block and the archive is copied to the
 # bucket and a presigned URL is printed for the tape_dump_url workspace variable.
 # Without it, the build stops at the local archive and tells you the next step.
@@ -67,6 +73,9 @@ SRC_S3_SECRET_KEY="${SRC_S3_SECRET_KEY:-${CORTEX_S3_SECRET_KEY:-minioadmin}}"
 SRC_S3_BUCKET="${SRC_S3_BUCKET:-${CORTEX_S3_BUCKET:-argus-tape}}"
 OUT="${OUT:-tape.tar.zst}"
 MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}"
+# Must track the qdrant image pinned in modules/core/cloud-init.yaml.tftpl.
+# Change one, change both -- see the snapshot-compatibility check in step 2.
+TAPE_QDRANT_MINOR="${TAPE_QDRANT_MINOR:-1.18}"
 
 # Trim any trailing slash so URL joins are clean.
 SRC_QDRANT_URL="${SRC_QDRANT_URL%/}"
@@ -110,6 +119,23 @@ pg_rows="$(awk '
 # For each collection: ask Qdrant to snapshot it, download the snapshot, then
 # delete the server-side copy so repeated builds don't pile them up on the source.
 say "qdrant snapshots  <-  $SRC_QDRANT_URL"
+
+# Compatibility gate. A Qdrant snapshot restores only into the same minor
+# version, and the restore side runs a pinned image -- so a dev box on a
+# different minor produces an archive that packs, uploads and validates fine,
+# then fails on core at first boot with nothing to point at. It is the one silent
+# path in an otherwise fail-loud script, so check it before doing any work.
+src_qdrant_version="$(curl -fsS "$SRC_QDRANT_URL/" | jq -r '.version // empty')"
+[ -n "$src_qdrant_version" ] || die "could not read a version from $SRC_QDRANT_URL -- is it Qdrant?"
+src_qdrant_minor="$(printf '%s' "$src_qdrant_version" | cut -d. -f1,2)"
+if [ "$src_qdrant_minor" != "$TAPE_QDRANT_MINOR" ]; then
+  die "source Qdrant is $src_qdrant_version (minor $src_qdrant_minor) but the demo restores on
+       $TAPE_QDRANT_MINOR.x -- snapshots do not cross minor versions, so this tape would fail to
+       restore. Match your local Qdrant to $TAPE_QDRANT_MINOR.x, or move the pin on BOTH sides
+       (modules/core/cloud-init.yaml.tftpl and TAPE_QDRANT_MINOR here)."
+fi
+say "  source qdrant $src_qdrant_version matches the restore pin ($TAPE_QDRANT_MINOR.x)"
+
 collections="$(curl -fsS "$SRC_QDRANT_URL/collections" | jq -r '.result.collections[].name')"
 if [ -z "$collections" ]; then
   warn "no Qdrant collections found -- tape will carry no vectors"
@@ -157,6 +183,9 @@ blob_count="$(find "$work/blobs" -type f | wc -l | tr -d ' ')"
   echo "# argus tape -- restored into core on first boot (README > The tape)"
   echo "lineage_rows=$pg_rows"
   echo "qdrant_collections=$qdrant_count"
+  # Recorded because it is a restore PRECONDITION, not trivia: these snapshots
+  # only load into a matching minor.
+  echo "qdrant_version=$src_qdrant_version"
   echo "blobs=$blob_count"
   echo "source_bucket=$SRC_S3_BUCKET"
 } > "$work/MANIFEST"

@@ -76,8 +76,12 @@ write_files:
         # node_exporter over the private network and the data services here by
         # compose DNS. Only Grafana is reachable from the admin IP; everything
         # else is private (tunnel to reach the Prometheus UI).
+        # All four are pinned for the same reason postgres/qdrant/minio are: a
+        # container recreate (reboot, `compose up -d`, host rebuild) must not
+        # silently roll the monitoring stack forward underneath us. Grafana in
+        # particular stores dashboards in a volume whose schema is version-bound.
         node-exporter:
-          image: prom/node-exporter:latest
+          image: prom/node-exporter:v1.12.1
           restart: unless-stopped
           network_mode: host
           pid: host
@@ -87,13 +91,13 @@ write_files:
           volumes: ["/:/host:ro,rslave"]
 
         postgres-exporter:
-          image: quay.io/prometheuscommunity/postgres-exporter:latest
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
           restart: unless-stopped
           env_file: /opt/argus/.env
           depends_on: [postgres]
 
         prometheus:
-          image: prom/prometheus:latest
+          image: prom/prometheus:v3.13.1
           restart: unless-stopped
           # Private only -- reach the UI with `ssh -L 9090:${private_ip}:9090`.
           ports: ["${private_ip}:9090:9090"]
@@ -102,7 +106,7 @@ write_files:
             - prometheus_data:/prometheus
 
         grafana:
-          image: grafana/grafana:latest
+          image: grafana/grafana:13.1.1
           restart: unless-stopped
           # Host port is a compose-level value, so it stays templated by
           # Terraform; the in-container port comes from GF_SERVER_HTTP_PORT in .env.
@@ -181,7 +185,17 @@ write_files:
       }
 
       cd /opt/argus
-      curl -fsSL "${tape_dump_url}" -o tape.tar.zst
+      # tape_dump_url is typically an R2 presigned URL, and R2 caps those at 7
+      # days. That makes a stale URL the single most likely reason a core rebuild
+      # comes up with empty stores -- so say so here rather than leaving a bare
+      # curl exit code in cloud-init-output.log. See docs/runbook.md > Seed the tape.
+      if ! curl -fsSL "${tape_dump_url}" -o tape.tar.zst; then
+        echo "could not fetch the tape from tape_dump_url." >&2
+        echo "If that URL is presigned it has likely EXPIRED (R2 max is 7 days)." >&2
+        echo "Rebuild and republish with 'make tape', set the new URL as the" >&2
+        echo "tape_dump_url workspace variable, then re-run this script." >&2
+        exit 1
+      fi
       rm -rf /opt/argus/tape && mkdir -p /opt/argus/tape
       tar --zstd -xf tape.tar.zst -C /opt/argus/tape
 
