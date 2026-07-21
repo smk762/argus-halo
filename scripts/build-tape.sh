@@ -33,10 +33,12 @@
 #     OUT                ./tape.tar.zst
 #
 # A Qdrant snapshot only restores into the SAME minor version, so the build
-# refuses to pack a tape the demo could not restore. Escape hatch, if you have
-# moved the pin on both sides:
+# refuses to pack a tape the demo could not restore. The minor is read from the
+# qdrant image pin in modules/core/cloud-init.yaml.tftpl, so there is nothing to
+# keep in sync by hand. Override only to build against a pin that is not in this
+# checkout; the restore side re-checks the version regardless, from MANIFEST:
 #
-#     TAPE_QDRANT_MINOR  minor the restore side runs, default 1.18
+#     TAPE_QDRANT_MINOR  minor the restore side runs (default: read from the pin)
 #
 # Upload to R2 is opt-in: set the R2_* block and the archive is copied to the
 # bucket and a presigned URL is printed for the tape_dump_url workspace variable.
@@ -45,7 +47,7 @@
 #     R2_ACCOUNT_ID          Cloudflare account id (or set R2_ENDPOINT directly)
 #     R2_ACCESS_KEY_ID       R2 S3 API token
 #     R2_SECRET_ACCESS_KEY   R2 S3 API token secret
-#     R2_BUCKET              defaults to the terraform `tape_bucket` output, else SRC_S3_BUCKET
+#     R2_BUCKET              defaults to the terraform `tape_bucket` output (aborts if unreadable)
 #     R2_URL_EXPIRY          presign lifetime, default 168h (7d, R2's max)
 #
 # Deliberately dependency-light: pg_dump, curl, jq, tar+zstd on the host, and
@@ -73,9 +75,6 @@ SRC_S3_SECRET_KEY="${SRC_S3_SECRET_KEY:-${CORTEX_S3_SECRET_KEY:-minioadmin}}"
 SRC_S3_BUCKET="${SRC_S3_BUCKET:-${CORTEX_S3_BUCKET:-argus-tape}}"
 OUT="${OUT:-tape.tar.zst}"
 MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}"
-# Must track the qdrant image pinned in modules/core/cloud-init.yaml.tftpl.
-# Change one, change both -- see the snapshot-compatibility check in step 2.
-TAPE_QDRANT_MINOR="${TAPE_QDRANT_MINOR:-1.18}"
 
 # Trim any trailing slash so URL joins are clean.
 SRC_QDRANT_URL="${SRC_QDRANT_URL%/}"
@@ -87,6 +86,44 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 need pg_dump; need curl; need jq; need tar; need zstd; need docker
+
+# --- 0. qdrant compatibility gate --------------------------------------------
+# A Qdrant snapshot restores only into the same minor version, and the restore
+# side runs a pinned image -- so a dev box on a different minor produces an
+# archive that packs, uploads and validates fine, then fails on core at first
+# boot with nothing to point at. That is the one silent path in an otherwise
+# fail-loud script, so it runs FIRST: before mktemp, before the pg_dump, before
+# anything that costs time or touches the source stores.
+#
+# The minor is READ from the qdrant image pin rather than restated here, so the
+# two cannot drift. The restore side independently re-checks the version it
+# actually booted with against the MANIFEST this script writes, which is what
+# catches a pin moved on only one side.
+CORE_TFTPL="$(dirname "$0")/../modules/core/cloud-init.yaml.tftpl"
+if [ -z "${TAPE_QDRANT_MINOR:-}" ]; then
+  TAPE_QDRANT_MINOR="$(sed -n \
+    's#^[[:space:]]*image:[[:space:]]*qdrant/qdrant:v\([0-9][0-9]*\.[0-9][0-9]*\)\..*#\1#p' \
+    "$CORE_TFTPL" 2>/dev/null | head -1)"
+  [ -n "$TAPE_QDRANT_MINOR" ] || die "could not read the qdrant pin from $CORE_TFTPL --
+       run this from a checkout, or set TAPE_QDRANT_MINOR to the minor core restores on."
+fi
+
+# Capture explicitly: a bare `x="$(curl ... | jq ...)"` is a simple command, so
+# under `set -e` a connection failure kills the script here and the guidance
+# below never prints -- the case it was written for is the case it would miss.
+src_qdrant_version=""
+if ! src_qdrant_version="$(curl -fsS "$SRC_QDRANT_URL/" | jq -r '.version // empty')"; then
+  die "could not reach a Qdrant at $SRC_QDRANT_URL -- is it up, and is SRC_QDRANT_URL right?"
+fi
+[ -n "$src_qdrant_version" ] || die "no version in the response from $SRC_QDRANT_URL -- is it Qdrant?"
+src_qdrant_minor="$(printf '%s' "$src_qdrant_version" | cut -d. -f1,2)"
+if [ "$src_qdrant_minor" != "$TAPE_QDRANT_MINOR" ]; then
+  die "source Qdrant is $src_qdrant_version (minor $src_qdrant_minor) but the demo restores on
+       $TAPE_QDRANT_MINOR.x -- snapshots do not cross minor versions, so this tape would fail to
+       restore. Match your local Qdrant to $TAPE_QDRANT_MINOR.x, or move the qdrant pin in
+       modules/core/cloud-init.yaml.tftpl (which is where this minor is read from)."
+fi
+say "source qdrant $src_qdrant_version matches the restore pin ($TAPE_QDRANT_MINOR.x)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -119,22 +156,6 @@ pg_rows="$(awk '
 # For each collection: ask Qdrant to snapshot it, download the snapshot, then
 # delete the server-side copy so repeated builds don't pile them up on the source.
 say "qdrant snapshots  <-  $SRC_QDRANT_URL"
-
-# Compatibility gate. A Qdrant snapshot restores only into the same minor
-# version, and the restore side runs a pinned image -- so a dev box on a
-# different minor produces an archive that packs, uploads and validates fine,
-# then fails on core at first boot with nothing to point at. It is the one silent
-# path in an otherwise fail-loud script, so check it before doing any work.
-src_qdrant_version="$(curl -fsS "$SRC_QDRANT_URL/" | jq -r '.version // empty')"
-[ -n "$src_qdrant_version" ] || die "could not read a version from $SRC_QDRANT_URL -- is it Qdrant?"
-src_qdrant_minor="$(printf '%s' "$src_qdrant_version" | cut -d. -f1,2)"
-if [ "$src_qdrant_minor" != "$TAPE_QDRANT_MINOR" ]; then
-  die "source Qdrant is $src_qdrant_version (minor $src_qdrant_minor) but the demo restores on
-       $TAPE_QDRANT_MINOR.x -- snapshots do not cross minor versions, so this tape would fail to
-       restore. Match your local Qdrant to $TAPE_QDRANT_MINOR.x, or move the pin on BOTH sides
-       (modules/core/cloud-init.yaml.tftpl and TAPE_QDRANT_MINOR here)."
-fi
-say "  source qdrant $src_qdrant_version matches the restore pin ($TAPE_QDRANT_MINOR.x)"
 
 collections="$(curl -fsS "$SRC_QDRANT_URL/collections" | jq -r '.result.collections[].name')"
 if [ -z "$collections" ]; then
@@ -213,11 +234,20 @@ EOF
 fi
 
 # Default the R2 destination to the bucket Terraform provisioned -- what
-# `terraform output -raw tape_bucket` reports and the runbook tells you to use --
-# falling back to the source bucket name if terraform/state isn't reachable here.
+# `terraform output -raw tape_bucket` reports and the runbook tells you to use.
+#
+# If that lookup fails, ABORT rather than falling back to SRC_S3_BUCKET. The two
+# names differ by default (`argus-halo-tape` vs `argus-tape`) and `mc mb
+# --ignore-existing` below would happily create the wrong one -- publishing the
+# tape into a bucket Terraform does not manage and `prevent_destroy` does not
+# cover, which is exactly the durability claim dns.tf makes. A silent near-miss
+# here looks like success right up until the bucket is deleted by someone tidying
+# up. Name it explicitly with R2_BUCKET if you really do want somewhere else.
 if [ -z "${R2_BUCKET:-}" ]; then
   R2_BUCKET="$(terraform output -raw tape_bucket 2>/dev/null || true)"
-  R2_BUCKET="${R2_BUCKET:-$SRC_S3_BUCKET}"
+  [ -n "$R2_BUCKET" ] || die "could not read 'terraform output -raw tape_bucket' -- run this from
+       an initialized checkout (terraform login && terraform init), or set R2_BUCKET explicitly.
+       Refusing to guess: uploading to the wrong bucket looks like success."
 fi
 R2_URL_EXPIRY="${R2_URL_EXPIRY:-168h}"
 say "upload  ->  $R2_ENDPOINT/$R2_BUCKET/tape.tar.zst"

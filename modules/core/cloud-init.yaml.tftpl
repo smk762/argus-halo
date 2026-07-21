@@ -169,8 +169,16 @@ write_files:
       #   lineage.sql, qdrant/<collection>.snapshot, blobs/...
       set -euo pipefail
       MARKER=/opt/argus/data/.tape-restored
+
+      # tape_dump_url is baked in by templatefile at PLAN time, so a hand re-run
+      # would otherwise always replay the URL this host was born with -- useless
+      # when the reason you are re-running is that the URL expired. TAPE_DUMP_URL
+      # overrides it, so recovery works without rebuilding the host:
+      #   TAPE_DUMP_URL='<fresh url>' /opt/argus/restore-tape.sh
+      TAPE_URL="$${TAPE_DUMP_URL:-${tape_dump_url}}"
+
       [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
-      [ -z "${tape_dump_url}" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
+      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
 
       # Bounded readiness wait: probe every 2s but give up after ~5min, so a store
       # that never comes up fails the restore instead of hanging cloud-init forever.
@@ -185,19 +193,65 @@ write_files:
       }
 
       cd /opt/argus
-      # tape_dump_url is typically an R2 presigned URL, and R2 caps those at 7
-      # days. That makes a stale URL the single most likely reason a core rebuild
-      # comes up with empty stores -- so say so here rather than leaving a bare
-      # curl exit code in cloud-init-output.log. See docs/runbook.md > Seed the tape.
-      if ! curl -fsSL "${tape_dump_url}" -o tape.tar.zst; then
-        echo "could not fetch the tape from tape_dump_url." >&2
-        echo "If that URL is presigned it has likely EXPIRED (R2 max is 7 days)." >&2
-        echo "Rebuild and republish with 'make tape', set the new URL as the" >&2
-        echo "tape_dump_url workspace variable, then re-run this script." >&2
+      # Separate the failure modes instead of blaming expiry for all of them: a
+      # dropped transfer, a DNS failure and a 403 on a stale presign are different
+      # problems with different fixes, and the old message asserted expiry for
+      # every one. --retry rides out the transient ones; --remove-on-error keeps a
+      # truncated archive from sitting there looking like a finished download.
+      # See docs/runbook.md > Seed the tape.
+      rm -f tape.tar.zst
+      curl_rc=0
+      http_code="$(curl -sSL --retry 3 --retry-all-errors --retry-delay 5 \
+        --remove-on-error -o tape.tar.zst -w '%%{http_code}' "$TAPE_URL")" || curl_rc=$?
+      if [ "$curl_rc" -ne 0 ]; then
+        rm -f tape.tar.zst
+        echo "could not fetch the tape: curl exited $curl_rc." >&2
+        echo "That is a transport failure -- DNS, TLS, or the connection dropped." >&2
+        echo "It is NOT a URL problem; retry before rebuilding the tape." >&2
         exit 1
       fi
+      case "$http_code" in
+        2??) ;;
+        401|403)
+          rm -f tape.tar.zst
+          echo "the tape URL was rejected (HTTP $http_code)." >&2
+          echo "If it is an R2 presigned URL it has almost certainly EXPIRED -- R2" >&2
+          echo "caps them at 7 days. Rebuild with 'make tape', then re-run here and" >&2
+          echo "PASS the fresh URL -- the one in this file was baked in at plan time" >&2
+          echo "and expired with it, so a bare re-run just repeats this:" >&2
+          echo "  TAPE_DUMP_URL='<new url>' /opt/argus/restore-tape.sh" >&2
+          echo "Also set it as the tape_dump_url workspace variable, or the NEXT" >&2
+          echo "rebuild of this host repeats this failure." >&2
+          exit 1 ;;
+        *)
+          rm -f tape.tar.zst
+          echo "the tape fetch returned HTTP $http_code -- not an expiry." >&2
+          echo "Check the bucket and object that tape_dump_url points at." >&2
+          exit 1 ;;
+      esac
       rm -rf /opt/argus/tape && mkdir -p /opt/argus/tape
       tar --zstd -xf tape.tar.zst -C /opt/argus/tape
+
+      # --- precondition: the tape's Qdrant minor must match this host's ---
+      # build-tape.sh records the source version in MANIFEST because a snapshot
+      # only restores into a matching minor. Check it HERE, where both numbers are
+      # actually known, rather than trusting the builder's copy of the pin: this
+      # catches a pin moved on one side only, and it fails BEFORE psql touches
+      # Postgres, so a rejected tape leaves the stores untouched instead of
+      # half-seeded. An older tape with no qdrant_version line skips the check.
+      wait_for qdrant curl -fsS "http://${private_ip}:6333/readyz"
+      tape_qdrant="$(sed -n 's/^qdrant_version=//p' /opt/argus/tape/MANIFEST 2>/dev/null || true)"
+      live_qdrant="$(curl -fsS "http://${private_ip}:6333/" \
+        | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || true
+      if [ -n "$tape_qdrant" ] && [ -n "$live_qdrant" ] \
+         && [ "$(printf '%s' "$tape_qdrant" | cut -d. -f1,2)" \
+           != "$(printf '%s' "$live_qdrant" | cut -d. -f1,2)" ]; then
+        echo "tape was built against Qdrant $tape_qdrant but this host runs $live_qdrant." >&2
+        echo "Snapshots do not cross minor versions -- refusing to restore rather" >&2
+        echo "than half-seeding the stores. Rebuild the tape against $live_qdrant, or" >&2
+        echo "move the qdrant pin here and in scripts/build-tape.sh together." >&2
+        exit 1
+      fi
 
       # --- lineage (Postgres) ---
       wait_for postgres pg_isready -h ${private_ip} -U argus -q
@@ -208,8 +262,8 @@ write_files:
 
       # --- vectors (Qdrant) ---
       # Each snapshot's filename is its collection name; upload recreates the
-      # collection from it (priority=snapshot => snapshot data wins).
-      wait_for qdrant curl -fsS "http://${private_ip}:6333/readyz"
+      # collection from it (priority=snapshot => snapshot data wins). Qdrant was
+      # already waited on above, for the version precondition.
       for snap in /opt/argus/tape/qdrant/*.snapshot; do
         [ -e "$snap" ] || break
         col="$(basename "$snap" .snapshot)"

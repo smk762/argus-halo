@@ -3,7 +3,7 @@
 # so no secret ever touches this disk.
 
 hcloud_token          = "..."           # Hetzner Console > Security > API tokens (Read & Write)
-cloudflare_api_token  = "..."           # Zone:DNS:Edit + Workers R2 Storage:Edit on dragonhound.dev
+cloudflare_api_token  = "..."           # Zone:DNS:Edit + Zone Settings:Edit + Workers R2 Storage:Edit on dragonhound.dev
 cloudflare_account_id = "..."           # Cloudflare dashboard sidebar
 cloudflare_zone_id    = "..."           # dragonhound.dev > Overview > API (bottom right)
 

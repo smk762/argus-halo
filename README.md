@@ -65,11 +65,15 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.0` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
 
-Defence in depth still sits around it, none sufficient alone:
+**What is actually reachable.** Caddy proxies six prefixes to the backends — `/caption` to lens, and `/scan`, `/folders`, `/thumb`, `/upload`, `/export` to curator — each as a bare/wildcard pair, because Caddy's `/scan/*` doesn't match a bare `/scan`. That list is the exposed surface, and it does **not** depend on how studio was built: `demo` mode only means the bundled frontend doesn't call these paths, not that they're closed. Anyone with curl reaches all six either way.
 
-- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container.
+Defence in depth sits around it, none sufficient alone:
+
+- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container. `ARGUS_CURATOR_EXPORT_ROOT` is left empty, so `/export` refuses server-side — it's routed anyway, because a clean refusal from the component that owns the rule beats a 404 from the proxy.
 - The demo tier holds no database; the stores are private-network only.
-- The two keyed/backed endpoints (`/caption/*`, `/scan/*`) are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP) so a public client can't drain the metered captioning key. In the default `demo` UI mode these paths aren't even exercised — see [Environment](#environment).
+- `/caption`, `/scan` and `/upload` are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP): the first two protect the metered captioning key, and `/upload` is the one unauthenticated write. The rule lowercases the path before matching, because Caddy matches case-insensitively and Cloudflare doesn't — without that, `/CAPTION/x` would route to lens and skip the limit.
+- `/folders` and `/thumb` are deliberately **not** rate-limited: a folder view fires `/thumb` once per tile, so a 15/min cap would trip on one legitimate page load. Free-plan Cloudflare allows a single rule, so the cap goes where the cost is.
+- Caddy caps request bodies at 32 MB on the curator routes. Scan-root containment bounds *where* an upload lands, not how big it is, and a per-minute rate limit doesn't bound bytes — so the body cap is its own control.
 
 These are containment, not authorization — the server-side enforcement is what actually closes the hole. A read-only mount limits the blast radius of a filesystem read, it doesn't prevent one, and `NEXT_PUBLIC_CURATOR_UI_MODE=demo` is a frontend flag anyone can bypass with curl.
 
@@ -196,10 +200,14 @@ fails inside cloud-init where nobody is watching. Refresh the URL before any
 planned core replace, or publish the tape at a stable address — it is a build
 artifact, not a secret, and nothing about it needs to be presigned.
 
-Qdrant snapshots only restore into the **same minor version**, so `make tape`
-refuses to build against a local Qdrant whose minor doesn't match the pinned
-image core restores on (`TAPE_QDRANT_MINOR`, kept next to the pin it tracks). The
-version is recorded in `MANIFEST` as the restore precondition it is.
+Qdrant snapshots only restore into the **same minor version**, so this is checked
+on both sides. `make tape` reads the minor straight out of the qdrant image pin in
+[core's cloud-init](modules/core/cloud-init.yaml.tftpl) and refuses to build
+against a local Qdrant that doesn't match — nothing to keep in sync by hand. It
+also records `qdrant_version` in `MANIFEST`, and `restore-tape.sh` re-checks that
+against the Qdrant it actually booted, *before* it touches Postgres. So a pin
+moved on one side only is caught at restore time with the stores still untouched,
+rather than leaving core half-seeded.
 
 Archive layout — the contract shared by the builder and the restore script:
 

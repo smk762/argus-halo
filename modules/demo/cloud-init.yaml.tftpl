@@ -54,8 +54,15 @@ write_files:
       # 404s -- invisible in the default `demo` UI mode (it makes no live calls)
       # and broken the moment anyone runs a `live` walkthrough or studio goes
       # same-origin (argus-studio#56).
+      #
+      # Every prefix is spelled as a bare/wildcard PAIR (`/scan /scan/*`), because
+      # Caddy's `/scan/*` does NOT match a bare `/scan`. The same pairs, lowercased,
+      # are what waf.tf rate-limits -- change this list, change that expression.
+      # Caddy matches paths case-insensitively, so `/Scan` lands here too; waf.tf
+      # therefore has to lower() its side to agree.
       ${domain} {
-        handle /caption/* {
+        @lens path /caption /caption/*
+        handle @lens {
           reverse_proxy lens:8100
         }
 
@@ -63,8 +70,16 @@ write_files:
         # ARGUS_CURATOR_EXPORT_ROOT is empty, so curator rejects it server-side.
         # A clean refusal from the component that owns the rule beats a 404 from
         # the frontend -- the boundary is curator's, not the reverse proxy's.
-        @curator path /scan/* /folders /folders/* /thumb /thumb/* /upload /upload/* /export /export/*
+        @curator path /scan /scan/* /folders /folders/* /thumb /thumb/* /upload /upload/* /export /export/*
         handle @curator {
+          # /upload is an unauthenticated multipart endpoint. Scan-root containment
+          # bounds WHERE a write lands, not how big it is, and the edge rate limit
+          # counts requests, not bytes -- so cap the body here, at the only place
+          # that sees it before curator spools it to disk. Sized for the sample
+          # images curator ingests; raise it if the corpus grows.
+          request_body {
+            max_size 32MB
+          }
           reverse_proxy curator:8101
         }
 
