@@ -13,7 +13,7 @@ variable "hcloud_token" {
 }
 
 variable "cloudflare_api_token" {
-  description = "Cloudflare token with Zone:DNS:Edit and Workers R2 Storage:Edit on dragonhound.dev."
+  description = "Cloudflare token with Zone:DNS:Edit, Zone Settings:Edit (for the SSL-mode resource) and Workers R2 Storage:Edit on dragonhound.dev."
   type        = string
   sensitive   = true
 }
@@ -84,6 +84,11 @@ variable "tape_dump_url" {
   description = <<-EOT
     Presigned URL of the seeded lineage dump, restored into core on first boot.
     Leave empty to start with empty stores. See README > The tape.
+
+    R2 caps presigned URLs at 7 days, and core reads this on EVERY first boot --
+    so refresh it before any apply that recreates core (a password rotation, a
+    cloud-init change, a server_type change), or the rebuild comes up with empty
+    stores. `make tape` prints a fresh one.
   EOT
   type        = string
   default     = ""

@@ -53,11 +53,11 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 **Why the full suite still fits 2 × CX23.** When quarry, forge and proof join the demo ([#7](https://github.com/smk762/argus-halo/issues/7)) they come in **read-only/replay** — no live training, no live eval — so the footprint stays 2 × CX23 at €10.98/mo and no GPU host is provisioned ([#10](https://github.com/smk762/argus-halo/issues/10)). The deciding weight is proof: its `[score]` stack pulls torch and insightface, several GB of image and a resident-memory tax a CX23 can't absorb alongside the rest. The demo image ships **without** the scorer and serves canned reports instead ([argus-proof#45](https://github.com/smk762/argus-proof/issues/45)). Same posture as *Why no GPU* above — the GPU work is replayed from what the real run recorded, not recomputed on the demo box. Revisit only if live `/forge run` or live `/proof` eval becomes a demo requirement, and that's a re-scope, not a resize.
 
-**Why no volume.** The tape is a build artifact with a long build time, not precious data — expensive to regenerate (GPU hours) but fully reproducible. Durability lives in the R2 dump, not in a block device. Adding `hcloud_volume` + `prevent_destroy` for 2 GB on a 40 GB disk would be theatre. Revisit if the tape outgrows the root disk.
+**Why no volume.** The tape is a build artifact with a long build time, not precious data — expensive to regenerate (GPU hours) but fully reproducible. Durability lives in the R2 dump, not in a block device. Adding `hcloud_volume` + `prevent_destroy` for 2 GB on a 40 GB disk would be theatre. `prevent_destroy` sits on the R2 bucket instead (`dns.tf`), which is where durability actually lives — a plain `terraform destroy` refuses rather than taking the one artifact that costs GPU hours to regenerate. Revisit if the tape outgrows the root disk.
 
 **Why not the OVH dedicated box.** A spare RISE-1 (Xeon-E 2386G, 64 GB ECC) was available at zero marginal cost and is far better hardware. Rejected on two counts: the workload cannot use 64 GB — Postgres holds metadata, Qdrant holds ~2.5 MB, MinIO is disk-bound — and more importantly, infrastructure pinned to a specific box nobody else owns can't be reproduced by a stranger. `git clone && terraform apply` is the point.
 
-**Why Cloudflare proxied.** Hides the origin address, terminates edge TLS, absorbs probes. Set the zone SSL mode to **Full (strict)** — Caddy holds a real certificate at the origin.
+**Why Cloudflare proxied.** Hides the origin address, terminates edge TLS, absorbs probes. The zone's SSL mode is pinned to **Full (strict)** in `dns.tf` — Caddy holds a real certificate at the origin, and anything less either talks plaintext to an origin that redirects to HTTPS (Flexible, an infinite loop) or skips validating the certificate it asked us to install. It's Terraform's to hold, not a checklist item.
 
 **Why our own compose, not argus-studio's.** [argus-studio](https://github.com/smk762/argus-studio) already ships suite compose orchestration — but it's a single-host *developer* stack: `up --build` from sibling checkouts, profiles, a GPU override, source bind-mounts. This demo is deployment-shaped and different in kind: two hosts with a public/private split, pinned published images (no build context), Caddy terminating real TLS at the origin, and the core stores (postgres/qdrant/minio) bound to the private network — none of which studio's dev compose models. So the demo keeps a small, purpose-built compose per tier and consumes studio only as the published `frontend` image. The suite images it references are tracked in [#2](https://github.com/smk762/argus-halo/issues/2).
 
@@ -65,11 +65,15 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.0` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
 
-Defence in depth still sits around it, none sufficient alone:
+**What is actually reachable.** Caddy proxies six prefixes to the backends — `/caption` to lens, and `/scan`, `/folders`, `/thumb`, `/upload`, `/export` to curator — each as a bare/wildcard pair, because Caddy's `/scan/*` doesn't match a bare `/scan`. That list is the exposed surface, and it does **not** depend on how studio was built: `demo` mode only means the bundled frontend doesn't call these paths, not that they're closed. Anyone with curl reaches all six either way.
 
-- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container.
+Defence in depth sits around it, none sufficient alone:
+
+- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container. `ARGUS_CURATOR_EXPORT_ROOT` is left empty, so `/export` refuses server-side — it's routed anyway, because a clean refusal from the component that owns the rule beats a 404 from the proxy.
 - The demo tier holds no database; the stores are private-network only.
-- The two keyed/backed endpoints (`/caption/*`, `/scan/*`) are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP) so a public client can't drain the metered captioning key. In the default `demo` UI mode these paths aren't even exercised — see [Environment](#environment).
+- `/caption`, `/scan` and `/upload` are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP): the first two protect the metered captioning key, and `/upload` is the one unauthenticated write. The rule lowercases the path before matching, because Caddy matches case-insensitively and Cloudflare doesn't — without that, `/CAPTION/x` would route to lens and skip the limit.
+- `/folders` and `/thumb` are deliberately **not** rate-limited: a folder view fires `/thumb` once per tile, so a 15/min cap would trip on one legitimate page load. Free-plan Cloudflare allows a single rule, so the cap goes where the cost is.
+- Caddy caps request bodies at 32 MB on the curator routes. Scan-root containment bounds *where* an upload lands, not how big it is, and a per-minute rate limit doesn't bound bytes — so the body cap is its own control.
 
 These are containment, not authorization — the server-side enforcement is what actually closes the hole. A read-only mount limits the blast radius of a filesystem read, it doesn't prevent one, and `NEXT_PUBLIC_CURATOR_UI_MODE=demo` is a frontend flag anyone can bypass with curl.
 
@@ -189,13 +193,29 @@ DAG (Postgres), the vectors (Qdrant), and the blobs (MinIO), in one
    `restore-tape.sh` (in [core's cloud-init](modules/core/cloud-init.yaml.tftpl)),
    guarded by `/opt/argus/data/.tape-restored` so a re-run never clobbers live data.
 
+**A presigned URL expires — R2 caps them at 7 days.** Core reads `tape_dump_url`
+on *every* first boot, so a stale URL means a rebuilt core comes up with empty
+stores. The restore fails loudly and names expiry as the likely cause, but it
+fails inside cloud-init where nobody is watching. Refresh the URL before any
+planned core replace, or publish the tape at a stable address — it is a build
+artifact, not a secret, and nothing about it needs to be presigned.
+
+Qdrant snapshots only restore into the **same minor version**, so this is checked
+on both sides. `make tape` reads the minor straight out of the qdrant image pin in
+[core's cloud-init](modules/core/cloud-init.yaml.tftpl) and refuses to build
+against a local Qdrant that doesn't match — nothing to keep in sync by hand. It
+also records `qdrant_version` in `MANIFEST`, and `restore-tape.sh` re-checks that
+against the Qdrant it actually booted, *before* it touches Postgres. So a pin
+moved on one side only is caught at restore time with the stores still untouched,
+rather than leaving core half-seeded.
+
 Archive layout — the contract shared by the builder and the restore script:
 
 ```
 lineage.sql                    pg_dump of the lineage DAG (schema + data)
 qdrant/<collection>.snapshot   one Qdrant snapshot per collection
 blobs/...                      a mirror of the S3/MinIO bucket
-MANIFEST                       row/collection/blob counts, for a sanity check
+MANIFEST                       row/collection/blob counts + source Qdrant version
 ```
 
 Collections are discovered from the live Qdrant, not hardcoded, so whatever

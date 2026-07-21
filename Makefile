@@ -4,7 +4,7 @@
 # is building the tape, which has several moving parts. See scripts/build-tape.sh
 # for configuration (source stores, R2 upload) and README > The tape.
 
-.PHONY: tape fmt validate
+.PHONY: tape fmt validate check-cloud-init
 
 # Build tape.tar.zst from the local pipeline stores (and upload to R2 if the
 # R2_* env is set). Override sources via SRC_* / CORTEX_* -- see the script header.
@@ -16,7 +16,14 @@ tape:
 fmt:
 	terraform fmt -recursive
 
-validate:
+validate: check-cloud-init
 	terraform fmt -check -recursive
 	terraform init -backend=false
 	terraform validate
+
+# `terraform validate` never expands templatefile(), so it sees none of the
+# cloud-init YAML, the bash inside it, or the Caddyfile that routes the public
+# entrypoint. This renders them and checks all three -- plus that the Caddy route
+# list and waf.tf's rate-limit expression still agree.
+check-cloud-init:
+	./scripts/check-cloud-init.sh
