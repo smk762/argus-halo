@@ -174,20 +174,29 @@ Expect the `node` (core + demo), `postgres`, `qdrant`, and `minio` jobs all `up`
 
 Skip for an empty-store demo. To seed from a recorded pipeline run:
 
-1. Build `tape.tar.zst` (see README → *The tape*) and upload to the R2 bucket
-   named by `terraform output -raw tape_bucket`.
-2. Generate a presigned URL and set the `tape_dump_url` workspace variable.
+1. With the pipeline's local stores up, build and upload in one step:
+
+   ```bash
+   R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... make tape
+   ```
+
+   That dumps Postgres, snapshots every Qdrant collection, mirrors the MinIO
+   bucket, packs `tape.tar.zst`, uploads it to the bucket from `terraform output
+   -raw tape_bucket`, and prints a presigned URL. Point it at non-default local
+   stores with `SRC_*`, or load a cortex `.env` with `ENV_FILE=...` — a bare
+   `source` won't survive `make` (see [scripts/build-tape.sh](../scripts/build-tape.sh)).
+   Omit the `R2_*` vars to build the archive only and upload by hand.
+2. Set that presigned URL as the `tape_dump_url` workspace variable.
 3. Re-apply, or re-run the restore on core:
 
 ```bash
 ssh root@$(terraform output -raw core_ipv4) '/opt/argus/restore-tape.sh'
 ```
 
-The script is idempotent — it no-ops once `/opt/argus/data/.tape-restored`
-exists. Delete that marker to force a re-seed.
-
-> Note: `restore-tape.sh` currently restores Postgres only. Qdrant snapshot and
-> MinIO blob restore are not wired yet — tracked in the issues.
+`restore-tape.sh` seeds all three stores — Postgres, then Qdrant (uploads each
+`qdrant/*.snapshot`, which recreates the collection), then MinIO (mirrors
+`blobs/` into the bucket). It's idempotent: it no-ops once
+`/opt/argus/data/.tape-restored` exists. Delete that marker to force a re-seed.
 
 ---
 

@@ -5,6 +5,9 @@ packages:
   - docker-compose-v2
   - postgresql-client-16
   - curl
+  # `tar --zstd` in restore-tape.sh shells out to the zstd binary; not in the
+  # base image.
+  - zstd
 
 write_files:
   # Single source of truth for this host's runtime config, rendered by
@@ -52,13 +55,16 @@ write_files:
             retries: 5
 
         qdrant:
-          image: qdrant/qdrant:latest
+          # Pinned: a Qdrant snapshot only restores to the SAME minor version, so
+          # this must match the qdrant the tape was built against (build-tape.sh).
+          image: qdrant/qdrant:v1.18.3
           restart: unless-stopped
           ports: ["${private_ip}:6333:6333"]
           volumes: ["/opt/argus/data/qdrant:/qdrant/storage"]
 
         minio:
-          image: minio/minio:latest
+          # Pinned so first-boot restore behaves like the build/test environment.
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
           restart: unless-stopped
           command: server /data --console-address ":9001"
           ports: ["${private_ip}:9000:9000"]
@@ -153,24 +159,71 @@ write_files:
     permissions: "0700"
     content: |
       #!/usr/bin/env bash
-      # Seeds the stores from the recorded pipeline run. Idempotent: the marker
-      # means a re-run of cloud-init won't clobber a live database.
+      # Seeds all three stores from the recorded pipeline run. Idempotent: the
+      # marker means a re-run of cloud-init won't clobber live data. Consumes the
+      # archive built by `make tape` (scripts/build-tape.sh) -- same layout:
+      #   lineage.sql, qdrant/<collection>.snapshot, blobs/...
       set -euo pipefail
       MARKER=/opt/argus/data/.tape-restored
       [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
       [ -z "${tape_dump_url}" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
 
+      # Bounded readiness wait: probe every 2s but give up after ~5min, so a store
+      # that never comes up fails the restore instead of hanging cloud-init forever.
+      wait_for() {  # wait_for <name> <probe cmd...>
+        local name="$1"; shift
+        local i=0
+        until "$@" >/dev/null 2>&1; do
+          i=$((i + 1))
+          [ "$i" -ge 150 ] && { echo "timed out waiting for $name to become ready" >&2; exit 1; }
+          sleep 2
+        done
+      }
+
       cd /opt/argus
       curl -fsSL "${tape_dump_url}" -o tape.tar.zst
+      rm -rf /opt/argus/tape && mkdir -p /opt/argus/tape
       tar --zstd -xf tape.tar.zst -C /opt/argus/tape
 
-      until pg_isready -h ${private_ip} -U argus -q; do sleep 2; done
+      # --- lineage (Postgres) ---
+      wait_for postgres pg_isready -h ${private_ip} -U argus -q
+      # ON_ERROR_STOP: a failed/partial load must abort (set -e) BEFORE the marker
+      # is written, so a broken restore is retried, not recorded as success.
       psql "postgresql://argus:${postgres_password}@${private_ip}:5432/argus" \
-        -f /opt/argus/tape/lineage.sql
+        -v ON_ERROR_STOP=1 -f /opt/argus/tape/lineage.sql
 
-      # Qdrant snapshot + MinIO blobs land via their own APIs -- see README.
+      # --- vectors (Qdrant) ---
+      # Each snapshot's filename is its collection name; upload recreates the
+      # collection from it (priority=snapshot => snapshot data wins).
+      wait_for qdrant curl -fsS "http://${private_ip}:6333/readyz"
+      for snap in /opt/argus/tape/qdrant/*.snapshot; do
+        [ -e "$snap" ] || break
+        col="$(basename "$snap" .snapshot)"
+        echo "restoring qdrant collection $col"
+        curl -fsS -X POST \
+          "http://${private_ip}:6333/collections/$col/snapshots/upload?priority=snapshot" \
+          -H "Content-Type:multipart/form-data" -F "snapshot=@$snap"
+      done
+
+      # --- blobs (MinIO) ---
+      # Always ensure the bucket exists (even for a blob-less tape, so the first
+      # cortex write doesn't hit NoSuchBucket), then mirror the archived objects
+      # into it via the mc image (no host client to install); --network host
+      # reaches the private-IP endpoint. An empty blobs/ makes the mirror a no-op.
+      wait_for minio curl -fsS "http://${private_ip}:9000/minio/health/ready"
+      echo "restoring minio blobs into ${s3_bucket}"
+      docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
+        --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -ec '
+          mc alias set core "http://${private_ip}:9000" "${minio_access_key}" "${minio_secret_key}" >/dev/null
+          mc mb --ignore-existing "core/${s3_bucket}" >/dev/null
+          mc mirror --overwrite /blobs "core/${s3_bucket}"
+        '
+
       touch "$MARKER"
+      # Reclaim the extraction scratch (a full second copy of the blobs) now that
+      # the stores hold the data; the marker records completion.
       rm -f tape.tar.zst
+      rm -rf /opt/argus/tape
 
 runcmd:
   - [mkdir, -p, /opt/argus/data/postgres, /opt/argus/data/qdrant, /opt/argus/data/minio, /opt/argus/tape]
