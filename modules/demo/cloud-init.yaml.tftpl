@@ -44,15 +44,30 @@ write_files:
 
   - path: /opt/argus/Caddyfile
     content: |
-      # Cloudflare proxies in front of this, so set the zone's SSL mode to
-      # Full (strict) -- Caddy terminates real TLS at the origin.
+      # Cloudflare proxies in front of this and the zone is pinned to Full
+      # (strict) in dns.tf -- Caddy terminates real TLS at the origin.
+      #
+      # Everything not claimed by an API prefix falls through to the frontend, so
+      # each backend route has to be named explicitly. curator serves more than
+      # /scan: the folder browser calls /folders and /thumb, and upload/export are
+      # part of the same API. Leaving them unrouted sent them to Next.js, which
+      # 404s -- invisible in the default `demo` UI mode (it makes no live calls)
+      # and broken the moment anyone runs a `live` walkthrough or studio goes
+      # same-origin (argus-studio#56).
       ${domain} {
         handle /caption/* {
           reverse_proxy lens:8100
         }
-        handle /scan/* {
+
+        # /export is routed on purpose even though it is meant to refuse here:
+        # ARGUS_CURATOR_EXPORT_ROOT is empty, so curator rejects it server-side.
+        # A clean refusal from the component that owns the rule beats a 404 from
+        # the frontend -- the boundary is curator's, not the reverse proxy's.
+        @curator path /scan/* /folders /folders/* /thumb /thumb/* /upload /upload/* /export /export/*
+        handle @curator {
           reverse_proxy curator:8101
         }
+
         handle {
           reverse_proxy frontend:3000
         }
@@ -107,7 +122,9 @@ write_files:
         # the public interface is default-deny inbound (no firewall rule opens
         # 9100), so only core's Prometheus reaches it over the private network.
         node-exporter:
-          image: prom/node-exporter:latest
+          # Pinned like the stores: a container recreate should not silently
+          # change the thing reporting on the host.
+          image: prom/node-exporter:v1.12.1
           restart: unless-stopped
           network_mode: host
           pid: host

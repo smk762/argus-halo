@@ -17,6 +17,8 @@ variables.
 
 - `terraform` >= 1.9 (repo is pinned/tested on 1.15.8)
 - `git`, `curl`, an SSH client
+- For `make tape` (§5 only): `pg_dump`, `jq`, `tar`, `zstd`, and Docker — the
+  script runs the MinIO client from its image so there's no `mc` to install
 - Optional: `tofu` — the config validates on OpenTofu too
 
 **Accounts & tokens:**
@@ -25,7 +27,7 @@ variables.
 |---|---|---|
 | HCP Terraform login | `terraform login` | CLI → HCP auth (`~/.terraform.d/credentials.tfrc.json`) |
 | Hetzner API token (Read & Write) | Console → Security → API tokens | `hcloud_token` |
-| Cloudflare API token | Zone:DNS:Edit + Workers R2 Storage:Edit on dragonhound.dev | `cloudflare_api_token` |
+| Cloudflare API token | Zone:DNS:Edit + Zone Settings:Edit + Workers R2 Storage:Edit on dragonhound.dev | `cloudflare_api_token` |
 | Cloudflare account ID | Dashboard sidebar | `cloudflare_account_id` |
 | Cloudflare zone ID | dragonhound.dev → Overview → API | `cloudflare_zone_id` |
 | SSH public key | your keypair (`ssh-keygen -t ed25519`) | `ssh_public_key` |
@@ -58,23 +60,30 @@ you need to. `lens_caption_api_key` has no default — without it lens returns
 
 ## 2. Pre-deploy checklist
 
-Do not `apply` until all of these are true. The first two are hard gates.
-`server_type` is no longer on this list — `plan` now checks it against live
-Hetzner stock and names the working alternatives (see preflight.tf).
+Do not `apply` until all of these are true. Several items that used to live here
+are now enforced by code and need no human:
 
-- [ ] **Curator enforces the scan root server-side.** `/scan/folder`,
-      `/scan/folder/stream` and `/export` must reject paths outside
-      `ARGUS_CURATOR_SCAN_ROOT`. This lives in argus-curator, tracked in
-      [argus-curator#3](https://github.com/smk762/argus-curator/issues/3). The
-      read-only mount here limits blast radius; it is **not** authorization.
-- [ ] **Container images exist.** `frontend`, `curator`, `lens` reference
-      `ghcr.io/smk762/argus-*:latest`. Confirm those tags are published and
-      pullable, or the demo host boots into image-pull errors.
+- `server_type` — `plan` checks it against live Hetzner stock and names the
+  working alternatives (`preflight.tf`).
+- **Curator scan-root containment** — shipped in argus-curator v0.2.0, which the
+  demo pins. `/scan/folder`, `/scan/folder/stream` and `/export` resolve under
+  `ARGUS_CURATOR_SCAN_ROOT` server-side; argus-halo#1 is closed.
+- **Cloudflare SSL mode** — pinned to Full (strict) by `cloudflare_zone_setting`
+  in `dns.tf`.
+
+What's left:
+
+- [ ] **The frontend image exists.** `curator` and `lens` are pinned to released
+      tags, but `frontend` is still `ghcr.io/smk762/argus-studio:latest` and that
+      tag is **not published yet** ([#2](https://github.com/smk762/argus-halo/issues/2)).
+      Until it is, the demo host boots into an image-pull error for that one
+      service and the public entrypoint 502s. This is the deploy gate.
 - [ ] Workspace variables are set with real values (Execution Mode = Remote),
       including `lens_caption_api_key` as **Sensitive** (a Cerebras key). Without
       it lens returns `401` on every caption.
-- [ ] Cloudflare zone SSL mode is **Full (strict)** (Caddy holds a real cert at
-      the origin).
+- [ ] The Cloudflare token carries **Zone Settings:Edit** as well as DNS and R2 —
+      the SSL-mode resource needs it, and a token minted before that resource
+      existed won't have it.
 - [ ] `terraform plan` output has been reviewed and matches expectations.
 
 **Public exposure — keep the crowd on `demo` mode.** The published `argus-studio`
@@ -98,14 +107,15 @@ terraform plan          # review: runs remotely in HCP
 terraform apply         # type 'yes' at the prompt
 ```
 
-Expected resource graph on a clean apply (≈11 resources):
+Expected resource graph on a clean apply (13 resources):
 
 - `hcloud_ssh_key.admin`
 - `hcloud_network.argus` + `hcloud_network_subnet.argus`
-- `random_password.postgres`, `random_password.minio`
+- `random_password.postgres`, `random_password.minio`, `random_password.grafana`
 - `module.core`: `hcloud_server.core` + `hcloud_firewall.core`
 - `module.demo`: `hcloud_server.demo` + `hcloud_firewall.demo`
-- `cloudflare_dns_record.demo` + `cloudflare_r2_bucket.tape`
+- `cloudflare_dns_record.demo`, `cloudflare_zone_setting.ssl`,
+  `cloudflare_r2_bucket.tape`, `cloudflare_ruleset.demo_ratelimit`
 
 Grab the outputs:
 
@@ -198,6 +208,20 @@ ssh root@$(terraform output -raw core_ipv4) '/opt/argus/restore-tape.sh'
 `blobs/` into the bucket). It's idempotent: it no-ops once
 `/opt/argus/data/.tape-restored` exists. Delete that marker to force a re-seed.
 
+> **The presigned URL expires — R2 caps them at 7 days.** Core reads
+> `tape_dump_url` on *every* first boot, so a rebuilt core with a stale URL comes
+> up with empty stores. The restore says so explicitly in
+> `/var/log/cloud-init-output.log`, but it fails inside cloud-init where nobody is
+> watching. **Before any planned core replace** (including
+> `-replace=random_password.postgres`, which recreates the host), re-run `make
+> tape` and refresh the variable. For a demo you rebuild often, publish the tape
+> at a stable address instead — it's a build artifact, not a secret.
+
+`make tape` refuses to build against a local Qdrant whose *minor* version differs
+from the pinned image core restores on: snapshots don't cross minors, so that
+combination would pack and upload cleanly and then fail at first boot. Override
+with `TAPE_QDRANT_MINOR` only if you've moved the pin on both sides.
+
 ---
 
 ## 6. Teardown
@@ -208,11 +232,23 @@ ssh root@$(terraform output -raw core_ipv4) '/opt/argus/restore-tape.sh'
 terraform destroy -target=module.demo
 ```
 
-**Full teardown** — destroys both hosts, network, DNS record. The R2 bucket is
-durable and holds the tape; Terraform will try to delete it too, so empty it
-first if you want to keep the dump:
+**Full teardown** — destroys both hosts, network, DNS record:
 
 ```bash
+terraform destroy
+```
+
+This **will refuse** while `cloudflare_r2_bucket.tape` carries `prevent_destroy`,
+which is deliberate: the bucket holds the one artifact that costs GPU hours to
+regenerate, and it should not go away as a side effect of tearing down two
+disposable VMs. Two options:
+
+```bash
+# Keep the tape (usual case) -- destroy everything else.
+terraform destroy -target=module.demo -target=module.core \
+  -target=cloudflare_dns_record.demo -target=cloudflare_ruleset.demo_ratelimit
+
+# Really delete the bucket -- remove the lifecycle block in dns.tf first, then:
 terraform destroy
 ```
 
@@ -224,17 +260,22 @@ in the tape.
 
 ## 7. Rotate secrets
 
-`postgres` and `minio` credentials are generated by `random_password` and stored
-in HCP state. To rotate:
+`postgres`, `minio` and `grafana` credentials are generated by `random_password`
+and stored in HCP state. To rotate:
 
 ```bash
 terraform apply -replace=random_password.postgres
 terraform apply -replace=random_password.minio
+terraform apply -replace=random_password.grafana   # then: terraform output -raw grafana_password
 ```
 
 This regenerates the secret and re-templates cloud-init; the affected host(s)
-will be recreated. For the Hetzner/Cloudflare API tokens, rotate at the provider
-and update the workspace variable.
+**will be recreated**. For `postgres`/`minio` that means core is rebuilt and
+re-restores the tape — so confirm `tape_dump_url` hasn't expired first (§5), or
+you rotate a password and lose the seed data in the same apply.
+
+For the Hetzner/Cloudflare API tokens, rotate at the provider and update the
+workspace variable.
 
 ---
 
@@ -244,10 +285,14 @@ and update the workspace variable.
 |---|---|---|
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
-| Demo returns 502 | app container down or image missing | `docker compose ps`/`logs` on demo; confirm GHCR tags |
-| TLS handshake errors | zone not on Full (strict) | set Cloudflare SSL mode to Full (strict) |
+| Demo returns 502 | app container down or image missing (`argus-studio:latest` is unpublished — #2) | `docker compose ps`/`logs` on demo; confirm GHCR tags |
+| `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
+| Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |
 | Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
 | Restore didn't run | marker present or no URL | remove `.tape-restored`, set `tape_dump_url` |
+| Core rebuilt with empty stores | presigned `tape_dump_url` expired (R2 max 7d) | `make tape`, set the fresh URL, re-run `/opt/argus/restore-tape.sh` — see §5 |
+| `make tape` aborts on a version mismatch | local Qdrant minor ≠ the pinned restore minor | match your local Qdrant; snapshots don't cross minors |
+| A curator call 404s from the browser | endpoint not in the Caddy route list | add the prefix to the `@curator` matcher in the demo cloud-init |
 | SSH/Grafana time out from your machine | your ISP rotated your IP; `admin_ip` no longer matches | see *Recover access after an IP change* below |
 
 Inspect a host's first-boot log:
