@@ -48,6 +48,7 @@ output "demo" {
     minio_secret_key      = "placeholder"
     curator_scan_root     = "/srv/argus/samples"
     curator_export_root   = ""
+    tape_dump_url         = "https://example.test/tape.tar.zst"
     quarry_home           = "/srv/argus/quarry"
     forge_export_root     = "/srv/argus/exports"
     proof_reports_dir     = "/srv/argus/proof/reports"
@@ -89,7 +90,8 @@ import sys, os, yaml
 
 work = sys.argv[1]
 expected = {
-    "demo": {"/opt/argus/.env", "/opt/argus/Caddyfile", "/opt/argus/compose.yaml"},
+    "demo": {"/opt/argus/.env", "/opt/argus/Caddyfile", "/opt/argus/compose.yaml",
+             "/opt/argus/restore-seed.sh"},
     "core": {"/opt/argus/.env", "/opt/argus/compose.yaml", "/opt/argus/prometheus.yml",
              "/opt/argus/grafana/provisioning/datasources/prometheus.yml",
              "/opt/argus/restore-tape.sh"},
@@ -116,7 +118,8 @@ for tier, want in expected.items():
 PY
 
 say "checking embedded shell"
-for s in "$work"/*restore-tape.sh; do
+# Both restore scripts: core's restore-tape.sh and the demo host's restore-seed.sh.
+for s in "$work"/*restore-*.sh; do
   [ -e "$s" ] || continue
   bash -n "$s" || die "rendered $(basename "$s") is not valid bash"
   echo "  $(basename "$s"): bash -n ok"

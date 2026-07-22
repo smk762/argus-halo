@@ -21,6 +21,7 @@ resource "hcloud_server" "demo" {
     minio_secret_key      = var.minio_secret_key
     curator_scan_root     = var.curator_scan_root
     curator_export_root   = var.curator_export_root
+    tape_dump_url         = var.tape_dump_url
     quarry_home           = var.quarry_home
     forge_export_root     = var.forge_export_root
     proof_reports_dir     = var.proof_reports_dir

@@ -4,13 +4,19 @@
 # core restores on first boot. Run this locally, against the stores the real
 # pipeline populated (README > The tape, step 1). Invoked via `make tape`.
 #
-# Archive layout -- the contract this script SHARES with the restore side
-# (modules/core/cloud-init.yaml.tftpl > restore-tape.sh). Change one, change both.
+# Archive layout -- the contract this script SHARES with two restore sides:
+# core's (modules/core/cloud-init.yaml.tftpl > restore-tape.sh) reads the store
+# dumps; the demo host's (modules/demo/cloud-init.yaml.tftpl > restore-seed.sh)
+# reads only the demo/ subtree. Change the layout, change all three.
 #
 #     MANIFEST                      what's inside + counts, for eyeballing
 #     lineage.sql                   pg_dump of the lineage DAG (schema + data)
 #     qdrant/<collection>.snapshot  one Qdrant snapshot per collection
 #     blobs/...                     a mirror of the S3/MinIO bucket's objects
+#     demo/samples/...              curator live-mode corpus (argus-halo#14)
+#     demo/quarry/...               quarry provenance pool (QUARRY_HOME)
+#     demo/exports/...              curated export forge renders configs from
+#     demo/proof/...                precomputed EvalReports proof replays (#9)
 #
 # Collections are discovered from the live Qdrant, not hardcoded: cortex's
 # canonical ones are image_embeddings / tagset_embeddings, but callers may use
@@ -31,6 +37,16 @@
 #     SRC_S3_SECRET_KEY  minioadmin
 #     SRC_S3_BUCKET      argus-tape
 #     OUT                ./tape.tar.zst
+#
+# Demo-tier seed trees (#9) are local directories, each optional -- point them at
+# the pipeline's local stores to seed the gallery/forge/proof pages, or leave them
+# unset and that tier renders empty (the pre-#9 behaviour; a core-only tape still
+# builds). The demo host extracts these; core ignores them:
+#
+#     SRC_SAMPLES        curator live-mode corpus  -> demo/samples (argus-halo#14)
+#     SRC_QUARRY_HOME    quarry provenance pool    -> demo/quarry  (or $QUARRY_HOME)
+#     SRC_FORGE_EXPORTS  curated export + captions -> demo/exports
+#     SRC_PROOF_DIR      precomputed EvalReports    -> demo/proof
 #
 # A Qdrant snapshot only restores into the SAME minor version, so the build
 # refuses to pack a tape the demo could not restore. The minor is read from the
@@ -75,6 +91,12 @@ SRC_S3_SECRET_KEY="${SRC_S3_SECRET_KEY:-${CORTEX_S3_SECRET_KEY:-minioadmin}}"
 SRC_S3_BUCKET="${SRC_S3_BUCKET:-${CORTEX_S3_BUCKET:-argus-tape}}"
 OUT="${OUT:-tape.tar.zst}"
 MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}"
+
+# Demo-tier seed sources (#9). Each optional -- unset means that tier ships empty.
+SRC_SAMPLES="${SRC_SAMPLES:-}"
+SRC_QUARRY_HOME="${SRC_QUARRY_HOME:-${QUARRY_HOME:-}}"
+SRC_FORGE_EXPORTS="${SRC_FORGE_EXPORTS:-}"
+SRC_PROOF_DIR="${SRC_PROOF_DIR:-}"
 
 # Trim any trailing slash so URL joins are clean.
 SRC_QDRANT_URL="${SRC_QDRANT_URL%/}"
@@ -199,6 +221,36 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e MC_CONFIG_DIR=/tmp/
   '
 blob_count="$(find "$work/blobs" -type f | wc -l | tr -d ' ')"
 
+# --- 3b. demo-tier seed trees (#9) -------------------------------------------
+# quarry/forge/proof and curator's live mode read from the demo host's local
+# /srv/argus/* dirs, not from core's stores -- so their seed rides in a demo/
+# subtree that the demo host's restore-seed.sh extracts (core ignores it). Each
+# source is optional: unset yields an empty subtree and a warning, so a core-only
+# tape (the pre-#9 shape) still builds and restores. The subtree names ARE the
+# contract with restore-seed.sh -- samples/quarry/exports/proof.
+say "demo-tier seed  <-  local dirs (#9)"
+mkdir -p "$work/demo"
+demo_files=0
+capture_tree() {  # capture_tree <label> <src dir> <dest subdir under demo/>
+  local label="$1" src="$2" dest="$work/demo/$3"
+  if [ -z "$src" ]; then
+    warn "no $label seed source set -- the demo $label tier will render empty (#9)"
+    return 0
+  fi
+  [ -d "$src" ] || die "$label seed source is not a directory: $src"
+  mkdir -p "$dest"
+  # Copy the contents, not the dir itself, so the subtree root is <dest> and the
+  # restore side drops it straight onto /srv/argus/<tier> without a nested level.
+  cp -a "$src/." "$dest/"
+  local n; n="$(find "$dest" -type f | wc -l | tr -d ' ')"
+  demo_files=$((demo_files + n))
+  say "  captured $label ($n files)  <-  $src"
+}
+capture_tree samples "$SRC_SAMPLES"       samples
+capture_tree quarry  "$SRC_QUARRY_HOME"   quarry
+capture_tree forge   "$SRC_FORGE_EXPORTS" exports
+capture_tree proof   "$SRC_PROOF_DIR"     proof
+
 # --- 4. manifest + archive ---------------------------------------------------
 {
   echo "# argus tape -- restored into core on first boot (README > The tape)"
@@ -209,11 +261,12 @@ blob_count="$(find "$work/blobs" -type f | wc -l | tr -d ' ')"
   echo "qdrant_version=$src_qdrant_version"
   echo "blobs=$blob_count"
   echo "source_bucket=$SRC_S3_BUCKET"
+  echo "demo_seed_files=$demo_files"
 } > "$work/MANIFEST"
 
 say "packing $OUT"
-tar --zstd -cf "$OUT" -C "$work" MANIFEST lineage.sql qdrant blobs
-say "built $OUT ($(du -h "$OUT" | cut -f1)) -- ${pg_rows} lineage rows, ${qdrant_count} collections, ${blob_count} blobs"
+tar --zstd -cf "$OUT" -C "$work" MANIFEST lineage.sql qdrant blobs demo
+say "built $OUT ($(du -h "$OUT" | cut -f1)) -- ${pg_rows} lineage rows, ${qdrant_count} collections, ${blob_count} blobs, ${demo_files} demo-seed files"
 
 # --- 5. upload to R2 (opt-in) ------------------------------------------------
 R2_ENDPOINT="${R2_ENDPOINT:-}"

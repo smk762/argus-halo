@@ -28,6 +28,15 @@ variable "minio_secret_key" {
   sensitive = true
 }
 
+# The demo host restores the same tape core does, but reads only its demo/ subtree
+# (quarry/forge/proof/samples seed) via restore-seed.sh. Empty => tiers start
+# empty. See variables.tf (root) for the full contract and README > The tape.
+variable "tape_dump_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 variable "curator_scan_root" {
   description = <<-EOT
     Sandbox directory curator is allowed to scan. See README > Security.
