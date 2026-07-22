@@ -97,6 +97,21 @@ write_files:
       # These prefixes and the paths in waf.tf are checked against each other by
       # scripts/check-cloud-init.sh.
       ${domain} {
+        # No service's admin surface is public. The namespaces are passthroughs,
+        # so anything a service exposes under /admin is reachable the moment the
+        # image ships it -- lens already has POST /admin/unload, which the old
+        # per-endpoint routing never reached. It is a no-op on the openai-compat
+        # backend, but it becomes a model-unload lever the moment lens runs a
+        # local model (the replay backend, argus-lens#45). One rule that holds
+        # for every tier, present and future, beats finding out per release.
+        # Bare + subtree per service, NOT `admin*` -- a trailing glob would also
+        # swallow /administrator, /adminfoo and any real route that merely starts
+        # with "admin". This matches the /admin segment and nothing longer.
+        @admin path /api/lens/admin /api/lens/admin/* /api/curator/admin /api/curator/admin/* /api/quarry/admin /api/quarry/admin/* /api/forge/admin /api/forge/admin/* /api/proof/admin /api/proof/admin/*
+        handle @admin {
+          respond "admin endpoints are not exposed on this host" 404
+        }
+
         handle_path /api/lens/* {
           reverse_proxy lens:8100
         }
@@ -156,10 +171,17 @@ write_files:
           restart: unless-stopped
 
         lens:
-          # No GPU on this box by design. Backend + endpoint come from .env
-          # (ARGUS_BACKEND=openai-compat -> Cerebras). The intended end state is
-          # a lineage-replay backend that needs no live model (argus-lens#45).
-          image: ghcr.io/smk762/argus-lens:0.4.0
+          # No GPU on this box by design. Backend + endpoint come from .env,
+          # currently ARGUS_BACKEND=openai-compat -> Cerebras.
+          #
+          # 0.5.0 SHIPS the lineage-replay backend (argus-lens#45) -- the intended
+          # end state, a caption path that needs no live model. It is not switched
+          # on yet: replay reads the CORTEX_* stores, which are still marked
+          # RESERVED in .env (no consumer had shipped). Flipping ARGUS_BACKEND to
+          # replay and un-reserving CORTEX_* is the follow-up; the image is bumped
+          # now so that change is one line, not an image bump plus a backend swap.
+          # Route surface is identical to 0.4.0 (verified), so this bump is inert.
+          image: ghcr.io/smk762/argus-lens:0.5.0
           restart: unless-stopped
           env_file: /opt/argus/.env
           command: ["argus-lens", "serve", "--cors", "--port", "8100"]
@@ -176,7 +198,9 @@ write_files:
           # refuses /export, scan/folders reject paths outside the mount root, and
           # mode=move is 403. Re-run those probes before bumping; a release that
           # relaxed any of them would widen the public surface with no diff here.
-          image: ghcr.io/smk762/argus-curator:0.2.0
+          # 0.2.0 -> 0.2.1 was re-probed on 2026-07-23 and is byte-identical on all
+          # six checks, which is what the rule above is for.
+          image: ghcr.io/smk762/argus-curator:0.2.1
           restart: unless-stopped
           env_file: /opt/argus/.env
           command: ["argus-curator", "serve", "--cors", "--port", "8101"]
@@ -192,6 +216,11 @@ write_files:
           # 0.2.0 shipped without the [server] extra (argus-quarry#3), so do not
           # roll this back. Note quarry also has a /thumb: it does not collide
           # with curator's because each sits under its own namespace.
+          #
+          # Still 0.2.1: the read-only fix (argus-quarry#5) is merged but v0.2.2
+          # failed to publish -- its own release smoke test polls /health, which now
+          # 503s on an empty QUARRY_HOME (argus-quarry#10). Bump to 0.2.2+ and flip
+          # the mount back to :ro once that ships.
           #
           # NOT :ro, unlike every other mount here, and not by preference.
           # quarry's store opens its SQLite DB read-write on every request --
@@ -214,7 +243,7 @@ write_files:
 
         forge:
           # Config renderer. Training is refused by default (403) -- see .env.
-          image: ghcr.io/smk762/argus-forge:0.1.0
+          image: ghcr.io/smk762/argus-forge:0.1.1
           restart: unless-stopped
           env_file: /opt/argus/.env
           volumes:
@@ -225,7 +254,7 @@ write_files:
           # (argus-proof#49); 0.1.0 exposed live GPU eval ungated, so this pin is
           # a security boundary -- do not roll it back. Ships without the [score]
           # stack (torch/insightface), which is what keeps it at ~170 MB (#10).
-          image: ghcr.io/smk762/argus-proof:0.2.0
+          image: ghcr.io/smk762/argus-proof:0.2.1
           restart: unless-stopped
           env_file: /opt/argus/.env
           volumes:

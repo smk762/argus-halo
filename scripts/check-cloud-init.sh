@@ -163,6 +163,28 @@ if bad:
     sys.exit(f"error: routes must be namespaced as /api/<service>; found {bad}. "
              f"Bare endpoint names collide across services -- see issue #8.")
 
+# The namespaces are passthroughs, so every service's /admin subtree must be
+# explicitly denied ahead of the routes -- otherwise an image that ships an admin
+# endpoint (lens already has POST /admin/unload) exposes it publicly on the next
+# pull, with no diff here. Require a bare+subtree deny for each routed namespace,
+# spelled as a pair rather than `admin*` (which would also catch /administrator).
+admin_paths = set()
+m = re.search(r'@admin\s+path\s+([^\n]+)', caddyfile)
+if m:
+    admin_paths = set(m.group(1).split())
+missing = []
+for ns in routed:
+    if f"{ns}/admin" not in admin_paths or f"{ns}/admin/*" not in admin_paths:
+        missing.append(ns)
+if missing:
+    sys.exit(f"error: no @admin deny for {sorted(missing)}; every /api/<svc> namespace "
+             f"needs `{{ns}}/admin {{ns}}/admin/*` in the @admin matcher (passthrough "
+             f"exposes admin endpoints otherwise). Found: {sorted(admin_paths)}")
+stray = sorted(p for p in admin_paths if p.endswith("admin*") or p.endswith("admin/**"))
+if stray:
+    sys.exit(f"error: @admin uses an over-broad glob {stray}; use the bare+subtree "
+             f"pair (/admin and /admin/*), which does not catch /administrator.")
+
 # Anything waf.tf rate-limits must actually be a route, and must be lowercased
 # there -- Caddy matches paths case-insensitively and the Rules language does not,
 # so a rule written against the raw path is bypassed by changing a letter's case.
