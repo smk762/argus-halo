@@ -65,11 +65,12 @@ are now enforced by code and need no human:
 
 - `server_type` — `plan` checks it against live Hetzner stock and names the
   working alternatives (`preflight.tf`).
-- **Curator scan-root containment** — shipped in argus-curator v0.2.0, which the
-  demo pins. `/scan/folder`, `/scan/folder/stream` and `/thumb`/`/upload` resolve
-  under `ARGUS_CURATOR_SCAN_ROOT` server-side; argus-halo#1 is closed. `/export`
-  is governed by the *separate* `ARGUS_CURATOR_EXPORT_ROOT`, which this demo
-  leaves **empty** so the endpoint refuses outright.
+- **Curator containment** — shipped in argus-curator v0.2.0, which the demo pins,
+  and verified against that tag (#19): scan/folders/thumb/upload resolve under
+  `ARGUS_CURATOR_SCAN_ROOT`, `mode=move` is `403`, and `/export` — governed by the
+  *separate* `ARGUS_CURATOR_EXPORT_ROOT`, left **empty** here — refuses outright.
+  argus-halo#1 is closed. Re-verify when the curator pin moves: `/api/curator/*`
+  is a passthrough, so this is the public boundary (README > Security).
 - **Cloudflare SSL mode** — pinned to Full (strict) by `cloudflare_zone_setting`
   in `dns.tf`. Note this is a *zone-wide* setting: it applies to every hostname on
   dragonhound.dev, not just this demo's.

@@ -138,6 +138,14 @@ write_files:
           # [server] only -- the gpu extra is for detectors/embeddings we don't run here.
           # Pinned to >=0.2.0: server-side scan/export path containment (argus-halo#1).
           # ARGUS_CURATOR_SCAN_ROOT (set in .env) is what arms that containment.
+          #
+          # MOVING THIS PIN IS A SECURITY CHANGE. Caddy routes /api/curator/* as a
+          # passthrough, so curator's own gating IS the public boundary -- there is
+          # no route whitelist behind it any more. The behaviour relied on was
+          # verified against exactly this tag (#19): empty ARGUS_CURATOR_EXPORT_ROOT
+          # refuses /export, scan/folders reject paths outside the mount root, and
+          # mode=move is 403. Re-run those probes before bumping; a release that
+          # relaxed any of them would widen the public surface with no diff here.
           image: ghcr.io/smk762/argus-curator:0.2.0
           restart: unless-stopped
           env_file: /opt/argus/.env
