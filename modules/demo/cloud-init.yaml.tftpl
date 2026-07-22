@@ -30,6 +30,29 @@ write_files:
       ARGUS_OPENAI_COMPAT_MODEL=${lens_caption_model}
       ARGUS_OPENAI_COMPAT_API_KEY=${lens_caption_api_key}
 
+      # --- argus-quarry (provenance gallery) --------------------------------
+      # Read-only API: every route is a GET (/photos, /stats, /subjects, /thumb).
+      # QUARRY_HOME is the provenance pool the tape seeds (#9); mounted read-only.
+      QUARRY_HOME=${quarry_home}
+
+      # --- argus-forge (training configs) -----------------------------------
+      # Renders dataset/config/train.sh from a curated export. Live training is
+      # OFF: forge refuses POST /run with 403 unless ARGUS_FORGE_READONLY=0, so
+      # the safe state is the default and we deliberately do not set the var --
+      # there is no GPU here (argus-forge#16). POST /config still dry-runs.
+      ARGUS_FORGE_EXPORT_ROOT=${forge_export_root}
+
+      # --- argus-proof (evaluation replay) ----------------------------------
+      # Replay mode: serves the precomputed EvalReports the tape seeds (#9) and
+      # 403s every write and live GPU eval, including POST /run/stream. Unlike
+      # forge this is NOT the default, so setting it is load-bearing
+      # (argus-proof#45, released in 0.2.0 via argus-proof#49). GET /health
+      # reports read_only so studio can hide the run action (argus-studio#59).
+      ARGUS_PROOF_READ_ONLY=1
+      ARGUS_PROOF_REPORTS_DIR=${proof_reports_dir}
+      ARGUS_PROOF_EXPORTS_DIR=${proof_exports_dir}
+      ARGUS_PROOF_RUNS_DIR=${proof_runs_dir}
+
       # --- cortex store contract (RESERVED, not yet consumed) ---------------
       # The stores exist on core, but lens/curator 0.x do not read CORTEX_* yet
       # (argus-lens#45). Wired now so replay + lineage capture land without
@@ -90,10 +113,17 @@ write_files:
           reverse_proxy curator:8101
         }
 
-        # quarry :8102, forge :8103 and proof :8104 land here as their images
-        # become real -- see #8. Do NOT add a route before the service is in
-        # compose with a pullable image: `compose up -d` aborts as a unit, so one
-        # missing image takes down the whole host rather than one service.
+        handle_path /api/quarry/* {
+          reverse_proxy quarry:8102
+        }
+
+        handle_path /api/forge/* {
+          reverse_proxy forge:8103
+        }
+
+        handle_path /api/proof/* {
+          reverse_proxy proof:8104
+        }
 
         handle {
           reverse_proxy frontend:3000
@@ -153,6 +183,54 @@ write_files:
           volumes:
             - /srv/argus/samples:${curator_scan_root}:ro
 
+        # --- full-suite tiers (#7) -----------------------------------------
+        # Reached only through Caddy's /api/<service>/* namespaces; no published
+        # ports, same as curator/lens. All three are read-only or replay here --
+        # the box has no GPU by design, and #10 fixed the posture at 2 x CX23.
+        quarry:
+          # Provenance gallery. 0.2.1 is the first tag whose IMAGE can serve --
+          # 0.2.0 shipped without the [server] extra (argus-quarry#3), so do not
+          # roll this back. Note quarry also has a /thumb: it does not collide
+          # with curator's because each sits under its own namespace.
+          #
+          # NOT :ro, unlike every other mount here, and not by preference.
+          # quarry's store opens its SQLite DB read-write on every request --
+          # ProvenanceStore.__init__ even mkdir()s the metadata dir first -- so a
+          # read-only mount makes the whole "read-only provenance API" 500
+          # (verified: EROFS on mkdir, then "unable to open database file" once
+          # the dir exists, because SQLite needs the directory writable for its
+          # journal). Tracked upstream in argus-quarry#5; revert to :ro when it
+          # opens the DB in read-only mode.
+          #
+          # What that costs us: nothing reachable from the internet. Every quarry
+          # route is a GET (/photos, /stats, /subjects, /thumb, /health) -- there
+          # is no public write path -- and the mount is quarry's own data
+          # directory, not the sample corpus curator serves.
+          image: ghcr.io/smk762/argus-quarry:0.2.1
+          restart: unless-stopped
+          env_file: /opt/argus/.env
+          volumes:
+            - /srv/argus/quarry:${quarry_home}
+
+        forge:
+          # Config renderer. Training is refused by default (403) -- see .env.
+          image: ghcr.io/smk762/argus-forge:0.1.0
+          restart: unless-stopped
+          env_file: /opt/argus/.env
+          volumes:
+            - /srv/argus/exports:${forge_export_root}:ro
+
+        proof:
+          # Evaluation replay. 0.2.0 is the first tag carrying read-only mode
+          # (argus-proof#49); 0.1.0 exposed live GPU eval ungated, so this pin is
+          # a security boundary -- do not roll it back. Ships without the [score]
+          # stack (torch/insightface), which is what keeps it at ~170 MB (#10).
+          image: ghcr.io/smk762/argus-proof:0.2.0
+          restart: unless-stopped
+          env_file: /opt/argus/.env
+          volumes:
+            - /srv/argus/proof:/srv/argus/proof:ro
+
         # Host metrics for the demo tier. Listens on :9100 across interfaces but
         # the public interface is default-deny inbound (no firewall rule opens
         # 9100), so only core's Prometheus reaches it over the private network.
@@ -172,6 +250,10 @@ write_files:
         caddy_data:
 
 runcmd:
-  - [mkdir, -p, /srv/argus/samples]
+  # Create every mount source before compose starts. Docker would create a
+  # missing bind source as a root-owned directory anyway, but doing it here keeps
+  # the seed layout explicit and matches what the tape restores into (#9).
+  - [mkdir, -p, /srv/argus/samples, /srv/argus/quarry, /srv/argus/exports,
+     /srv/argus/proof/reports, /srv/argus/proof/exports, /srv/argus/proof/runs]
   - [systemctl, enable, --now, docker]
   - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]

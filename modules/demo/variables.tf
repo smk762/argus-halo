@@ -47,6 +47,42 @@ variable "curator_export_root" {
   default     = ""
 }
 
+# --- full-suite tiers (#7) ---------------------------------------------------
+# In-container paths for the three read-only/replay services. Each is bind-
+# mounted read-only from /srv/argus/<tier> on the host, which the tape seeds (#9).
+# They are container-side paths, not host paths -- changing one changes what the
+# service is told, so it must match the mount in cloud-init.
+
+variable "quarry_home" {
+  description = "Provenance pool quarry serves from (QUARRY_HOME). Read-only; the gallery API is all GETs."
+  type        = string
+  default     = "/srv/argus/quarry"
+}
+
+variable "forge_export_root" {
+  description = "Curated export root forge renders training configs from. Read-only; live training is refused by default."
+  type        = string
+  default     = "/srv/argus/exports"
+}
+
+variable "proof_reports_dir" {
+  description = "Precomputed EvalReports proof replays. Read-only; live GPU eval is disabled via ARGUS_PROOF_READ_ONLY."
+  type        = string
+  default     = "/srv/argus/proof/reports"
+}
+
+variable "proof_exports_dir" {
+  description = "Export tree proof resolves report images against."
+  type        = string
+  default     = "/srv/argus/proof/exports"
+}
+
+variable "proof_runs_dir" {
+  description = "Run directory proof reads. Never written to in replay mode."
+  type        = string
+  default     = "/srv/argus/proof/runs"
+}
+
 # --- lens captioning backend -------------------------------------------------
 # lens 0.4.0 has no lineage-replay backend (argus-lens#45) and there is no GPU
 # here, so captions come from an OpenAI-compatible vision endpoint.

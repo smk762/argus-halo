@@ -74,6 +74,10 @@ are now enforced by code and need no human:
 - **Cloudflare SSL mode** — pinned to Full (strict) by `cloudflare_zone_setting`
   in `dns.tf`. Note this is a *zone-wide* setting: it applies to every hostname on
   dragonhound.dev, not just this demo's.
+- **No live GPU work is reachable** — `POST /api/proof/run/stream` and
+  `POST /api/forge/run` both return `403` on the pinned images, verified through
+  the proxy. proof needs `ARGUS_PROOF_READ_ONLY=1` (set in `.env`); forge refuses
+  by default and would need `ARGUS_FORGE_READONLY=0` to enable, which we never set.
 
 What's left:
 
@@ -128,6 +132,9 @@ terraform apply         # type 'yes' at the prompt
 ```
 
 Expected resource graph on a clean apply (14 resources):
+
+The demo host now runs seven containers — `caddy`, `frontend`, `lens`, `curator`,
+`quarry`, `forge`, `proof` — plus `node-exporter`. Core is unchanged.
 
 - `hcloud_ssh_key.admin`
 - `hcloud_network.argus` + `hcloud_network_subnet.argus`
