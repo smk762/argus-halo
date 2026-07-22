@@ -47,31 +47,38 @@ write_files:
       # Cloudflare proxies in front of this and the zone is pinned to Full
       # (strict) in dns.tf -- Caddy terminates real TLS at the origin.
       #
-      # Everything not claimed by an API prefix falls through to the frontend, so
-      # each backend route has to be named explicitly. curator serves more than
-      # /scan: the folder browser calls /folders and /thumb, and upload/export are
-      # part of the same API. Leaving them unrouted sent them to Next.js, which
-      # 404s -- invisible in the default `demo` UI mode (it makes no live calls)
-      # and broken the moment anyone runs a `live` walkthrough or studio goes
-      # same-origin (argus-studio#56).
+      # One origin, one namespace per service: `/api/<service>/*` is stripped by
+      # handle_path before the request reaches the backend, so curator still sees
+      # /scan/folder and needs no changes. Anything unclaimed falls through to the
+      # frontend (argus-studio#56 makes those base URLs runtime-configurable).
       #
-      # Every prefix is spelled as a bare/wildcard PAIR (`/scan /scan/*`), because
-      # Caddy's `/scan/*` does NOT match a bare `/scan`. The same pairs, lowercased,
-      # are what waf.tf rate-limits -- change this list, change that expression.
-      # Caddy matches paths case-insensitively, so `/Scan` lands here too; waf.tf
-      # therefore has to lower() its side to agree.
+      # Why a namespace and not the bare endpoint names. Enumerating each backend's
+      # endpoints here meant the list had to be rediscovered every time a service
+      # grew one -- and since user_data is ForceNew, every such fix replaces the
+      # public host (#18). It also does not scale to the full suite: proof serves
+      # /reports, /models, /exports and /run/stream at ITS root, which collide with
+      # the frontend's pages and near-collide with curator's /export (#8).
+      #
+      # The trade, stated plainly: this is a passthrough, not a whitelist. Every
+      # endpoint a service exposes is now reachable under its prefix, including
+      # ones added by a future image bump. That is consistent with how this demo
+      # already assigns responsibility -- containment is curator's job, enforced
+      # server-side under ARGUS_CURATOR_SCAN_ROOT, and the proxy was never the
+      # boundary (README > Security) -- but it does mean a service's own gating is
+      # now load-bearing rather than backed up by the route list.
+      #
+      # Caveat for anything added later: the prefix is STRIPPED, so a service that
+      # emits absolute URLs must be told its mount point (FastAPI: root_path) or
+      # its generated links 404 at the edge.
+      #
+      # These prefixes and the paths in waf.tf are checked against each other by
+      # scripts/check-cloud-init.sh.
       ${domain} {
-        @lens path /caption /caption/*
-        handle @lens {
+        handle_path /api/lens/* {
           reverse_proxy lens:8100
         }
 
-        # /export is routed on purpose even though it is meant to refuse here:
-        # ARGUS_CURATOR_EXPORT_ROOT is empty, so curator rejects it server-side.
-        # A clean refusal from the component that owns the rule beats a 404 from
-        # the frontend -- the boundary is curator's, not the reverse proxy's.
-        @curator path /scan /scan/* /folders /folders/* /thumb /thumb/* /upload /upload/* /export /export/*
-        handle @curator {
+        handle_path /api/curator/* {
           # /upload is an unauthenticated multipart endpoint. Scan-root containment
           # bounds WHERE a write lands, not how big it is, and the edge rate limit
           # counts requests, not bytes -- so cap the body here, at the only place
@@ -82,6 +89,11 @@ write_files:
           }
           reverse_proxy curator:8101
         }
+
+        # quarry :8102, forge :8103 and proof :8104 land here as their images
+        # become real -- see #8. Do NOT add a route before the service is in
+        # compose with a pullable image: `compose up -d` aborts as a unit, so one
+        # missing image takes down the whole host rather than one service.
 
         handle {
           reverse_proxy frontend:3000

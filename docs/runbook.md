@@ -103,17 +103,18 @@ captioning key is untouched. Only `live` mode drives real scans/captions, which
 your own walkthroughs or a tiny curated set until replay lands
 ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)).
 
-**The UI mode does not control reachability.** Caddy routes `/caption`, `/scan`,
-`/folders`, `/thumb`, `/upload` and `/export` to lens/curator regardless of how
-studio was built; `demo` mode only means the *bundled frontend* doesn't call them.
-Anyone with curl reaches them either way, so the real controls are the ones in the
-config: a Cloudflare rate-limit rule (`waf.tf`) caps `/caption`, `/scan` and
-`/upload` at 15 req/min per IP, Caddy caps request bodies at 32 MB, curator
-confines paths to `ARGUS_CURATOR_SCAN_ROOT`, and an empty
-`ARGUS_CURATOR_EXPORT_ROOT` makes `/export` refuse. `/folders` and `/thumb` are
-deliberately uncapped — a folder view fires `/thumb` once per tile and would trip
-the limit on its own. `demo`/`live` is baked at studio build time — see README >
-Environment.
+**The UI mode does not control reachability.** Caddy routes `/api/lens/*` and
+`/api/curator/*` to the backends regardless of how studio was built; `demo` mode
+only means the *bundled frontend* doesn't call them. Anyone with curl reaches them
+either way, so the real controls are the ones in the config: a Cloudflare
+rate-limit rule (`waf.tf`) caps `/api/lens/caption`, `/api/curator/scan` and
+`/api/curator/upload` at 15 req/min per IP, Caddy caps request bodies at 32 MB,
+curator confines paths to `ARGUS_CURATOR_SCAN_ROOT`, and an empty
+`ARGUS_CURATOR_EXPORT_ROOT` makes `/export` refuse. `folders` and `thumb` are
+deliberately uncapped — a folder view fires thumb once per tile and would trip the
+limit on its own. Note the namespace is a passthrough, so a service's *whole* API
+is reachable under its prefix — see README > Security. `demo`/`live` is baked at
+studio build time — see README > Environment.
 
 ---
 
@@ -331,7 +332,7 @@ workspace variable.
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
 | Demo returns 502 | a backend container is down but Caddy is up | `docker compose ps`/`logs` on demo |
 | Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack (`argus-studio:latest` is unpublished — #2) | `docker compose ps -a` on demo will be empty; confirm every GHCR tag is pullable |
-| `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `@curator` handle block, or split the upload |
+| `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |
 | Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
@@ -340,7 +341,8 @@ workspace variable.
 | Restore says "transport failure", not expiry | network/DNS/TLS, not the URL | retry; the script already retries 3× before giving up |
 | Restore refuses on a Qdrant version mismatch | tape built against a different Qdrant minor than core runs | rebuild the tape against core's Qdrant, or move the pin in `modules/core/cloud-init.yaml.tftpl` (build-tape.sh reads its minor from there) |
 | `make tape` aborts on a version mismatch | local Qdrant minor ≠ the pinned restore minor | match your local Qdrant; snapshots don't cross minors |
-| A curator call 404s from the browser | endpoint not in the Caddy route list | add the prefix — as a bare/wildcard pair — to the `@curator` matcher in the demo cloud-init, and to `waf.tf` if it needs metering. Note this replaces the demo host |
+| A backend call 404s from the browser | frontend called the bare path instead of the `/api/<service>/…` namespace | fix the frontend's base URL (argus-studio#56 made it runtime-configurable); the proxy no longer needs a per-endpoint route |
+| A whole service 404s | its `handle_path /api/<svc>/*` block is missing | add the block in the demo cloud-init, and the service to compose — see #8. Note this replaces the demo host |
 | SSH/Grafana time out from your machine | your ISP rotated your IP; `admin_ip` no longer matches | see *Recover access after an IP change* below |
 
 Inspect a host's first-boot log:

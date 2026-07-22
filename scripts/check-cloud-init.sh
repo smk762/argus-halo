@@ -14,7 +14,7 @@
 #   2. every embedded script is syntactically valid bash (and shellcheck-clean,
 #      if shellcheck is installed),
 #   3. the Caddyfile adapts (`caddy validate`), and
-#   4. the @lens/@curator path list agrees with waf.tf's rate-limit expression --
+#   4. the /api/<service>/* route list agrees with waf.tf's rate-limit expression --
 #      the one cross-file invariant nothing else in the repo enforces.
 #
 # Needs: terraform, python3 (+pyyaml), bash. Uses `caddy` if present, else the
@@ -145,19 +145,18 @@ import re, sys
 
 caddyfile, waf = (open(p).read() for p in sys.argv[1:3])
 
-# Every prefix must be spelled as a bare/wildcard pair: Caddy's `/scan/*` does
-# not match a bare `/scan`, so a lone wildcard silently 404s the bare form.
-paths = []
-for m in re.finditer(r'^\s*@\w+\s+path\s+(.+)$', caddyfile, re.M):
-    paths += m.group(1).split()
-if not paths:
-    sys.exit("error: no @matcher path lists found in the rendered Caddyfile")
+# Each backend is mounted under its own /api/<service>/* namespace, stripped by
+# handle_path. Collect the namespaces; everything else falls through to the
+# frontend by design.
+routed = {m.group(1) for m in
+          re.finditer(r'^\s*handle_path\s+(/\S+?)/\*\s*\{', caddyfile, re.M)}
+if not routed:
+    sys.exit("error: no `handle_path /prefix/* {` routes found in the rendered Caddyfile")
 
-bare = {p for p in paths if not p.endswith("/*")}
-wild = {p[:-2] for p in paths if p.endswith("/*")}
-if bare != wild:
-    sys.exit(f"error: bare/wildcard pairs are not aligned; "
-             f"bare-only={sorted(bare - wild)} wildcard-only={sorted(wild - bare)}")
+bad = sorted(p for p in routed if not re.fullmatch(r'/api/[a-z][a-z0-9-]*', p))
+if bad:
+    sys.exit(f"error: routes must be namespaced as /api/<service>; found {bad}. "
+             f"Bare endpoint names collide across services -- see issue #8.")
 
 # Anything waf.tf rate-limits must actually be a route, and must be lowercased
 # there -- Caddy matches paths case-insensitively and the Rules language does not,
@@ -175,21 +174,25 @@ if "lower(http.request.uri.path)" not in expr:
     sys.exit("error: waf.tf must match on lower(http.request.uri.path) -- Caddy's "
              "path matching is case-insensitive, so a raw-path rule is bypassable")
 
-unknown = limited - bare
-if unknown:
-    sys.exit(f"error: waf.tf rate-limits paths that Caddy does not route: {sorted(unknown)}")
+# waf.tf sees EDGE paths -- handle_path strips the prefix only after Cloudflare
+# has already matched -- so every rate-limited path must sit under a routed
+# namespace, or the rule guards nothing.
+orphans = sorted(p for p in limited
+                 if not any(p.startswith(ns + "/") for ns in routed))
+if orphans:
+    sys.exit(f"error: waf.tf rate-limits paths under no routed namespace: {orphans}; "
+             f"routed namespaces are {sorted(routed)}")
 
-# Each rate-limited prefix needs BOTH forms, for the same reason the Caddy
-# matcher does: an exact-match on /scan alone leaves /scan/folder uncapped.
+# Each rate-limited path needs BOTH forms: an exact match on /api/curator/scan
+# alone leaves /api/curator/scan/folder uncapped.
 want = {p.rstrip("/") + "/" for p in limited}
 if prefixes != want:
     sys.exit(f"error: waf.tf exact-match and prefix-match sets disagree; "
              f"exact={sorted(limited)} implies prefixes {sorted(want)}, "
              f"found {sorted(prefixes)}")
 
-print(f"  routed:       {sorted(bare)}")
-print(f"  rate-limited: {sorted(limited)} (+ subtrees, lowercased)")
-print(f"  uncapped:     {sorted(bare - limited)}")
+print(f"  routed namespaces: {sorted(routed)}")
+print(f"  rate-limited:      {sorted(limited)} (+ subtrees, lowercased)")
 PY
 
 say "all cloud-init checks passed"
