@@ -38,6 +38,15 @@ variable "ssh_public_key" {
 variable "admin_ip" {
   description = "Your source address in CIDR form, e.g. 203.0.113.9/32. SSH is restricted to this."
   type        = string
+
+  # Ask the question at plan time, like preflight.tf does for server_type. A bare
+  # address (203.0.113.9) otherwise passes plan and fails at apply on two firewall
+  # resources, in the Hetzner API's words rather than ours. cidrhost() rejects any
+  # value that is not a valid CIDR, so can() turns that into a clean plan error.
+  validation {
+    condition     = can(cidrhost(var.admin_ip, 0))
+    error_message = "admin_ip must be in CIDR form, e.g. 203.0.113.9/32 (a bare address is not accepted)."
+  }
 }
 
 # --- placement ---------------------------------------------------------------
