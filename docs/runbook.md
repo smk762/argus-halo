@@ -82,13 +82,14 @@ are now enforced by code and need no human:
 
 What's left:
 
-- [ ] **The frontend image exists.** `curator` and `lens` are pinned to released
-      tags, but `frontend` is still `ghcr.io/smk762/argus-studio:latest` and that
-      tag is **not published yet** ([#2](https://github.com/smk762/argus-halo/issues/2)).
-      `docker compose up -d` fails as a unit on an unpullable image, so this does
-      not degrade to one broken service — **nothing on the demo host starts**,
-      Caddy never binds :80/:443, and Cloudflare serves 521/522 rather than a 502.
-      This is the deploy gate.
+- [ ] **Every image tag is pullable.** All six services are pinned to released
+      GHCR tags — `frontend` last, at `argus-studio:0.1.0`
+      ([#2](https://github.com/smk762/argus-halo/issues/2)), which closed the old
+      deploy gate. The failure mode if a pin ever goes stale is still worth
+      knowing: `docker compose up -d` fails as a unit on an unpullable image, so
+      it does not degrade to one broken service — **nothing on the demo host
+      starts**, Caddy never binds :80/:443, and Cloudflare serves 521/522 rather
+      than a 502.
 - [ ] **`tape_dump_url` is fresh** if you are seeding (§5). Any apply that changes
       cloud-init or a `random_password` recreates the host(s), and core re-runs
       the restore on first boot against whatever URL is in the workspace. R2
@@ -101,8 +102,8 @@ What's left:
       existed won't have it.
 - [ ] `terraform plan` output has been reviewed and matches expectations.
 
-**Public exposure — keep the crowd on `demo` mode.** The published `argus-studio`
-image should be built in `demo` UI mode (studio's default): the frontend serves a
+**Public exposure — keep the crowd on `demo` mode.** The compose sets
+`ARGUS_CURATOR_UI_MODE=demo` on the frontend (also studio's default): it serves a
 bundled sample and makes **no** live calls to lens/curator, so the metered
 captioning key is untouched. Only `live` mode drives real scans/captions, which
 (a) meters against the Cerebras key and (b) drives real scans — reserve it for
@@ -119,8 +120,9 @@ curator confines paths to `ARGUS_CURATOR_SCAN_ROOT`, and an empty
 `ARGUS_CURATOR_EXPORT_ROOT` makes `/export` refuse. `folders` and `thumb` are
 deliberately uncapped — a folder view fires thumb once per tile and would trip the
 limit on its own. Note the namespace is a passthrough, so a service's *whole* API
-is reachable under its prefix — see README > Security. `demo`/`live` is baked at
-studio build time — see README > Environment.
+is reachable under its prefix — see README > Security. `demo`/`live` is runtime
+config on the frontend service since studio 0.1.0 (argus-studio#56) — see
+README > Environment.
 
 ---
 
@@ -340,7 +342,7 @@ workspace variable.
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
 | Demo returns 502 | a backend container is down but Caddy is up | `docker compose ps`/`logs` on demo |
-| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack (`argus-studio:latest` is unpublished — #2) | `docker compose ps -a` on demo will be empty; confirm every GHCR tag is pullable |
+| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | `docker compose ps -a` on demo will be empty; confirm every GHCR tag is pullable (all six are pinned — #2) |
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |

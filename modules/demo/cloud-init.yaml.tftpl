@@ -35,9 +35,9 @@ write_files:
 
       # --- argus-quarry (provenance gallery) --------------------------------
       # Read-only API: every route is a GET (/photos, /stats, /subjects, /thumb).
-      # QUARRY_HOME is the provenance pool the tape seeds (#9). Its mount is
-      # read-WRITE, not :ro -- quarry opens its SQLite store read-write on every
-      # request; see the quarry service in compose.yaml for the full reasoning.
+      # QUARRY_HOME is the provenance pool the tape seeds (#9), mounted :ro --
+      # 0.2.2 taught serve to open a read-only QUARRY_HOME (argus-quarry#5);
+      # see the quarry service in compose.yaml.
       QUARRY_HOME=${quarry_home}
 
       # --- argus-forge (training configs) -----------------------------------
@@ -78,7 +78,8 @@ write_files:
       # One origin, one namespace per service: `/api/<service>/*` is stripped by
       # handle_path before the request reaches the backend, so curator still sees
       # /scan/folder and needs no changes. Anything unclaimed falls through to the
-      # frontend (argus-studio#56 makes those base URLs runtime-configurable).
+      # frontend, whose API base URLs point back at these prefixes (set on the
+      # frontend service at runtime -- argus-studio#56, shipped in 0.1.0).
       #
       # Why a namespace and not the bare endpoint names. Enumerating each backend's
       # endpoints here meant the list had to be rediscovered every time a service
@@ -182,16 +183,34 @@ write_files:
 
         frontend:
           # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
-          # Stays :latest until studio publishes a release (argus-halo#2), then
-          # pin like the others.
+          # Pinned now that studio publishes releases (argus-halo#2 -- this was
+          # the last :latest in the stack).
           #
-          # No `environment:` here on purpose: studio's NEXT_PUBLIC_* are inlined
-          # at BUILD time, so setting them at runtime is inert (argus-studio#56).
-          # The published image must be built for this origin, or -- preferred --
-          # made runtime-configurable / same-origin (it already sits behind Caddy
-          # on one origin here). Tracked in argus-studio#56.
-          image: ghcr.io/smk762/argus-studio:latest
+          # 0.1.0 ships the argus-studio#56 fix: API base URLs are resolved from
+          # the container environment PER REQUEST, not baked into the bundle at
+          # build time -- which is what makes this `environment:` block work at
+          # all (the pre-#56 comment here said the opposite, and was right then).
+          # Each URL is a path prefix on this origin, matching the Caddyfile
+          # namespaces above; studio hands them to the browser, which requests
+          # /api/<service>/* and never needs a second origin or CORS.
+          image: ghcr.io/smk762/argus-studio:0.1.0
           restart: unless-stopped
+          # Deliberately not env_file: /opt/argus/.env carries the caption API
+          # key and CORTEX_* store credentials, none of which belong in the
+          # frontend container.
+          environment:
+            - ARGUS_LENS_URL=/api/lens
+            - ARGUS_CURATOR_URL=/api/curator
+            - ARGUS_QUARRY_URL=/api/quarry
+            - ARGUS_FORGE_URL=/api/forge
+            - ARGUS_PROOF_URL=/api/proof
+            # demo = the bundled read-only sample scan. A UI flag, not a boundary
+            # (README > Security): curator's server-side containment is what
+            # holds against curl. Flipping this to `live` is a UI decision, not
+            # a security change -- the API surface is identical either way.
+            # (live mode would also want ARGUS_CURATOR_SOURCE_PATH=${curator_scan_root}
+            # so the folder picker starts somewhere real.)
+            - ARGUS_CURATOR_UI_MODE=demo
 
         lens:
           # No GPU on this box by design. Backend + endpoint come from .env,
@@ -235,34 +254,27 @@ write_files:
         # ports, same as curator/lens. All three are read-only or replay here --
         # the box has no GPU by design, and #10 fixed the posture at 2 x CX23.
         quarry:
-          # Provenance gallery. 0.2.1 is the first tag whose IMAGE can serve --
-          # 0.2.0 shipped without the [server] extra (argus-quarry#3), so do not
-          # roll this back. Note quarry also has a /thumb: it does not collide
-          # with curator's because each sits under its own namespace.
+          # Provenance gallery. 0.2.3 clears both caveats the 0.2.1 pin carried:
+          # serve now opens a read-only QUARRY_HOME (argus-quarry#5 -- SQLite in
+          # ro mode, no mkdir on the read path), and the release gate that sank
+          # v0.2.2 is fixed by splitting liveness /health from readiness /ready
+          # (argus-quarry#10). Do not roll back past 0.2.1 -- 0.2.0's image
+          # cannot serve at all (missing the [server] extra, argus-quarry#3).
+          # Note quarry also has a /thumb: it does not collide with curator's
+          # because each sits under its own namespace.
           #
-          # Still 0.2.1: the read-only fix (argus-quarry#5) is merged but v0.2.2
-          # failed to publish -- its own release smoke test polls /health, which now
-          # 503s on an empty QUARRY_HOME (argus-quarry#10). Bump to 0.2.2+ and flip
-          # the mount back to :ro once that ships.
+          # :ro at last, like every other tier mount -- the "read-only
+          # provenance API" (all GETs) is now backed by a mount that enforces
+          # it, instead of relying on there being no public write path.
           #
-          # NOT :ro, unlike every other mount here, and not by preference.
-          # quarry's store opens its SQLite DB read-write on every request --
-          # ProvenanceStore.__init__ even mkdir()s the metadata dir first -- so a
-          # read-only mount makes the whole "read-only provenance API" 500
-          # (verified: EROFS on mkdir, then "unable to open database file" once
-          # the dir exists, because SQLite needs the directory writable for its
-          # journal). Tracked upstream in argus-quarry#5; revert to :ro when it
-          # opens the DB in read-only mode.
-          #
-          # What that costs us: nothing reachable from the internet. Every quarry
-          # route is a GET (/photos, /stats, /subjects, /thumb, /health) -- there
-          # is no public write path -- and the mount is quarry's own data
-          # directory, not the sample corpus curator serves.
-          image: ghcr.io/smk762/argus-quarry:0.2.1
+          # 0.2.3 also runs as uid 10001, not root (argus-quarry#8). The tape
+          # extracts the pool root-owned, so restore-seed.sh opens it up with
+          # a+rX -- read is all a :ro mount needs.
+          image: ghcr.io/smk762/argus-quarry:0.2.3
           restart: unless-stopped
           env_file: /opt/argus/.env
           volumes:
-            - /srv/argus/quarry:${quarry_home}
+            - /srv/argus/quarry:${quarry_home}:ro
 
         forge:
           # Config renderer. Training is refused by default (403) -- see .env.
@@ -378,6 +390,11 @@ write_files:
       seed quarry  /srv/argus/quarry
       seed exports /srv/argus/exports
       seed proof   /srv/argus/proof
+
+      # quarry 0.2.3+ runs as uid 10001 (argus-quarry#8) and mounts the pool
+      # :ro. The tape extracts root-owned, so grant world-read (a+rX: read plus
+      # directory traversal) or every quarry GET 500s on open().
+      chmod -R a+rX /srv/argus/quarry
 
       rm -rf /srv/argus/tape tape.tar.zst
       touch "$MARKER"
