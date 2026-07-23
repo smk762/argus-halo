@@ -34,10 +34,10 @@ write_files:
       ARGUS_OPENAI_COMPAT_API_KEY=${lens_caption_api_key}
 
       # --- argus-quarry (provenance gallery) --------------------------------
-      # Read-only API: every route is a GET (/photos, /stats, /subjects, /thumb).
-      # QUARRY_HOME is the provenance pool the tape seeds (#9), mounted :ro --
-      # 0.2.2 taught serve to open a read-only QUARRY_HOME (argus-quarry#5);
-      # see the quarry service in compose.yaml.
+      # Read-only API: every route is a GET. QUARRY_HOME is the provenance pool
+      # the tape seeds (#9), mounted :ro -- 0.2.3 is the first PUBLISHED release
+      # whose store opens a read-only QUARRY_HOME (argus-quarry#5); see the
+      # quarry service in compose.yaml for the rollback rule.
       QUARRY_HOME=${quarry_home}
 
       # --- argus-forge (training configs) -----------------------------------
@@ -208,8 +208,9 @@ write_files:
             # (README > Security): curator's server-side containment is what
             # holds against curl. Flipping this to `live` is a UI decision, not
             # a security change -- the API surface is identical either way.
-            # (live mode would also want ARGUS_CURATOR_SOURCE_PATH=${curator_scan_root}
-            # so the folder picker starts somewhere real.)
+            # (live mode would also want ARGUS_CURATOR_SOURCE_PATH set to the
+            # same path as ARGUS_CURATOR_SCAN_ROOT in .env, so the folder
+            # picker starts somewhere real.)
             - ARGUS_CURATOR_UI_MODE=demo
 
         lens:
@@ -254,22 +255,25 @@ write_files:
         # ports, same as curator/lens. All three are read-only or replay here --
         # the box has no GPU by design, and #10 fixed the posture at 2 x CX23.
         quarry:
-          # Provenance gallery. 0.2.3 clears both caveats the 0.2.1 pin carried:
-          # serve now opens a read-only QUARRY_HOME (argus-quarry#5 -- SQLite in
-          # ro mode, no mkdir on the read path), and the release gate that sank
-          # v0.2.2 is fixed by splitting liveness /health from readiness /ready
-          # (argus-quarry#10). Do not roll back past 0.2.1 -- 0.2.0's image
-          # cannot serve at all (missing the [server] extra, argus-quarry#3).
-          # Note quarry also has a /thumb: it does not collide with curator's
-          # because each sits under its own namespace.
+          # Provenance gallery. 0.2.3 is the ROLLBACK FLOOR while the mount
+          # below is :ro -- it is the first published release whose store opens
+          # a read-only QUARRY_HOME (argus-quarry#5: SQLite in ro mode, no
+          # mkdir on the read path). 0.2.1 opens the pool read-write, which
+          # EROFSes behind :ro, so rolling back to it means also reverting the
+          # mount; 0.2.2 was never published (its release gate failed, fixed in
+          # 0.2.3 -- argus-quarry#10); 0.2.0's image cannot serve at all
+          # (missing the [server] extra, argus-quarry#3). Note quarry also has
+          # a /thumb: it does not collide with curator's because each sits
+          # under its own namespace.
           #
           # :ro at last, like every other tier mount -- the "read-only
           # provenance API" (all GETs) is now backed by a mount that enforces
-          # it, instead of relying on there being no public write path.
-          #
-          # 0.2.3 also runs as uid 10001, not root (argus-quarry#8). The tape
-          # extracts the pool root-owned, so restore-seed.sh opens it up with
-          # a+rX -- read is all a :ro mount needs.
+          # it, instead of relying on there being no public write path. The
+          # pool must arrive self-contained and world-readable: build-tape.sh
+          # checkpoints the SQLite WAL at pack time (0.2.3 refuses to serve an
+          # un-checkpointed -wal from a read-only mount) and restore-seed.sh
+          # grants a+rX per tier, since 0.2.3 runs as uid 10001, not root
+          # (argus-quarry#8).
           image: ghcr.io/smk762/argus-quarry:0.2.3
           restart: unless-stopped
           env_file: /opt/argus/.env
@@ -333,7 +337,11 @@ write_files:
       TAPE_URL="$${TAPE_DUMP_URL:-${tape_dump_url}}"
 
       [ -f "$MARKER" ] && { echo "demo seed already restored"; exit 0; }
-      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, demo tiers start empty"; exit 0; }
+      # "Empty" is degraded, not broken -- except quarry: its pool is mounted
+      # :ro, so unlike the pre-0.2.3 rw mount it cannot create a store on first
+      # request, and /ready plus every data GET answer 503 until a pool is
+      # seeded. The other tiers render empty pages.
+      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, demo tiers start empty (quarry 503s until seeded -- its :ro mount forbids creating a store)"; exit 0; }
 
       cd /srv/argus
       # Mirror restore-tape.sh's fetch: separate transport failures from an expired
@@ -370,7 +378,8 @@ write_files:
       members="$(tar --zstd -tf tape.tar.zst)" || { echo "cannot read the tape archive" >&2; exit 1; }
       if ! printf '%s\n' "$members" | grep -q '^demo/'; then
         echo "this tape carries no demo/ subtree -- tiers start empty (rebuild with a" >&2
-        echo "#9-aware 'make tape' to seed them)." >&2
+        echo "#9-aware 'make tape' to seed them; quarry 503s until then, its :ro mount" >&2
+        echo "forbids creating a store)." >&2
         rm -f tape.tar.zst
         exit 0
       fi
@@ -384,17 +393,20 @@ write_files:
         [ -d "$sub" ] || { echo "  (no $1 in tape; $dest left empty)"; return 0; }
         mkdir -p "$dest"
         cp -a "$sub/." "$dest/"
+        # The tape preserves whatever owners and modes the build box had (tapes
+        # older than the pack-time normalization in build-tape.sh carry them
+        # verbatim), and these trees are read through :ro mounts by images that
+        # may not run as root -- quarry 0.2.3+ is uid 10001 (argus-quarry#8) --
+        # so grant world-read (a+rX: read plus directory traversal) per tier,
+        # or every GET 500s on open(). Per seed, not after the loop, so a
+        # failure in a later tier cannot strand this one seeded-but-unreadable.
+        chmod -R a+rX "$dest"
         echo "  seeded $dest ($(find "$sub" -type f | wc -l | tr -d ' ') files)"
       }
       seed samples /srv/argus/samples
       seed quarry  /srv/argus/quarry
       seed exports /srv/argus/exports
       seed proof   /srv/argus/proof
-
-      # quarry 0.2.3+ runs as uid 10001 (argus-quarry#8) and mounts the pool
-      # :ro. The tape extracts root-owned, so grant world-read (a+rX: read plus
-      # directory traversal) or every quarry GET 500s on open().
-      chmod -R a+rX /srv/argus/quarry
 
       rm -rf /srv/argus/tape tape.tar.zst
       touch "$MARKER"
@@ -408,7 +420,10 @@ runcmd:
      /srv/argus/proof/reports, /srv/argus/proof/exports, /srv/argus/proof/runs]
   # Seed the read-only mount sources BEFORE the containers that mount them start
   # (#9). A no-op when tape_dump_url is unset or the tape predates the demo/
-  # subtree, so this never blocks boot.
+  # subtree, so this never blocks boot -- though an unseeded quarry answers 503
+  # on /ready and its data routes until a pool arrives: its :ro mount forbids
+  # creating a store, unlike the pre-0.2.3 rw mount. The other tiers render
+  # empty pages.
   - [/opt/argus/restore-seed.sh]
   - [systemctl, enable, --now, docker]
   - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]

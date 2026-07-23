@@ -79,17 +79,17 @@ are now enforced by code and need no human:
   `POST /api/forge/run` both return `403` on the pinned images, verified through
   the proxy. proof needs `ARGUS_PROOF_READ_ONLY=1` (set in `.env`); forge refuses
   by default and would need `ARGUS_FORGE_READONLY=0` to enable, which we never set.
+- **Every image tag is pullable** — `scripts/check-cloud-init.sh` (CI, every PR)
+  asks each registry for every pinned manifest in both rendered compose files;
+  a 404 fails the build. All services are pinned — `frontend` was the last
+  ([#2](https://github.com/smk762/argus-halo/issues/2)), which closed the old
+  deploy gate. The failure mode the check prevents is total: `docker compose
+  up -d` fails as a unit on an unpullable image, so it does not degrade to one
+  broken service — **nothing on the demo host starts**, Caddy never binds
+  :80/:443, and Cloudflare serves 521/522 rather than a 502.
 
 What's left:
 
-- [ ] **Every image tag is pullable.** All six services are pinned to released
-      GHCR tags — `frontend` last, at `argus-studio:0.1.0`
-      ([#2](https://github.com/smk762/argus-halo/issues/2)), which closed the old
-      deploy gate. The failure mode if a pin ever goes stale is still worth
-      knowing: `docker compose up -d` fails as a unit on an unpullable image, so
-      it does not degrade to one broken service — **nothing on the demo host
-      starts**, Caddy never binds :80/:443, and Cloudflare serves 521/522 rather
-      than a 502.
 - [ ] **`tape_dump_url` is fresh** if you are seeding (§5). Any apply that changes
       cloud-init or a `random_password` recreates the host(s), and core re-runs
       the restore on first boot against whatever URL is in the workspace. R2
@@ -242,6 +242,22 @@ ssh root@$(terraform output -raw core_ipv4) \
 `blobs/` into the bucket). It's idempotent: it no-ops once
 `/opt/argus/data/.tape-restored` exists. Delete that marker to force a re-seed.
 
+The **demo host** has its own counterpart, `restore-seed.sh`: it reads the same
+tape's `demo/` subtree, drops each tier onto its bind-mount source
+(`/srv/argus/<tier>`), and makes the trees world-readable (`a+rX` — quarry
+0.2.3+ reads its `:ro` pool as uid 10001). It runs before `compose up` on first
+boot and no-ops once `/srv/argus/.seed-restored` exists; to refresh the demo
+tiers in place, delete that marker and re-run with a fresh URL:
+
+```bash
+ssh root@$(terraform output -raw demo_ipv4) \
+  "rm -f /srv/argus/.seed-restored && TAPE_DUMP_URL='<the presigned url>' /opt/argus/restore-seed.sh"
+```
+
+Re-seed through the script rather than untarring by hand: a hand-copied pool
+keeps whatever restrictive modes the tape carries, and quarry then 500s on
+every read through its read-only mount.
+
 > **The presigned URL expires — R2 caps them at 7 days.** Core reads
 > `tape_dump_url` on *every* first boot, so a rebuilt core with a stale URL comes
 > up with empty stores. The restore distinguishes a stale URL (HTTP 401/403) from
@@ -342,7 +358,7 @@ workspace variable.
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
 | Demo returns 502 | a backend container is down but Caddy is up | `docker compose ps`/`logs` on demo |
-| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | `docker compose ps -a` on demo will be empty; confirm every GHCR tag is pullable (all six are pinned — #2) |
+| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | `docker compose ps -a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |

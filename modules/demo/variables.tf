@@ -59,10 +59,11 @@ variable "curator_export_root" {
 # --- full-suite tiers (#7) ---------------------------------------------------
 # In-container paths for the three read-only/replay services, bind-mounted from
 # /srv/argus/<tier> on the host, which the tape seeds (#9). All three are
-# mounted :ro -- quarry only since 0.2.2, when its store learned to open a
-# read-only QUARRY_HOME (argus-quarry#5). These are container-side paths only:
-# each one is what the service is told AND the mount target, so the two cannot
-# drift.
+# mounted :ro -- quarry only since the 0.2.3 pin, the first published release
+# whose store opens a read-only QUARRY_HOME (argus-quarry#5; the rollback rule
+# lives at the pin in cloud-init.yaml.tftpl). These are container-side paths
+# only: each one is what the service is told AND the mount target, so the two
+# cannot drift.
 
 variable "quarry_home" {
   description = "Provenance pool quarry serves from (QUARRY_HOME). Mounted read-only since the 0.2.3 pin (argus-quarry#5); the public API is all GETs."

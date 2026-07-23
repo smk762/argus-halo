@@ -105,13 +105,17 @@ Grafana ships with the Prometheus datasource auto-provisioned; add dashboards to
 
 ## Environment
 
-Config reaches the containers by one path on **both** tiers: Terraform renders a
-single `/opt/argus/.env` per host (from HCP workspace variables, `random_password`
-resources, and derived values), cloud-init writes it `0600`, and every service
-that needs config loads it with Compose `env_file`. No per-service inline secrets,
-one file to reason about per host. To add a key: declare the Terraform variable,
-thread it into that tier's `templatefile(...)`, and add the line to the `.env`
-block. Where each value comes from:
+Config reaches the backend containers by one path on **both** tiers: Terraform
+renders a single `/opt/argus/.env` per host (from HCP workspace variables,
+`random_password` resources, and derived values), cloud-init writes it `0600`,
+and every backend service loads it with Compose `env_file`. No per-service
+inline secrets, one file to reason about per host. The one exception is the
+demo's `frontend`, which gets an inline `environment:` block and never reads
+`.env` — see the frontend section below. To add a key: declare the Terraform
+variable, thread it into that tier's `templatefile(...)`, and add the line to
+the `.env` block — unless the frontend is the consumer, in which case it goes
+in the `frontend` service's `environment:` block instead. Where each value
+comes from:
 
 - **Sensitive / operator-supplied** → a **Sensitive** HCP workspace variable.
 - **Generated** → a `random_password` resource (never printed, never committed).
@@ -170,7 +174,7 @@ block. Where each value comes from:
 ### frontend (argus-studio) — runtime, but **not** in `.env`
 
 [argus-studio#56](https://github.com/smk762/argus-studio/issues/56) (shipped in
-the pinned `0.1.0`) made the frontend's API base URLs **runtime** configuration:
+`0.1.0`) made the frontend's API base URLs **runtime** configuration:
 the image resolves `ARGUS_*` from its environment per request instead of baking
 `NEXT_PUBLIC_*` into the bundle at build time, so one published image deploys to
 any origin. The demo sets them in the `frontend` service's `environment:` block —
@@ -232,7 +236,6 @@ Restore is idempotent and safe to re-run by hand — see the runbook.
 
 ## Known gaps
 
-- The frontend image (`argus-studio`) isn't published to GHCR yet, so the demo can't fully boot until it is ([#2](https://github.com/smk762/argus-halo/issues/2)), and its URLs are baked at build time until it's made runtime-configurable ([argus-studio#56](https://github.com/smk762/argus-studio/issues/56)). `curator` and `lens` are pinned to released tags.
 - **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
 - CI runs `fmt -check` + `validate` on every push and PR. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
 

@@ -13,14 +13,23 @@
 #   1. the rendered document is valid YAML with the write_files we expect,
 #   2. every embedded script is syntactically valid bash (and shellcheck-clean,
 #      if shellcheck is installed),
-#   3. the Caddyfile adapts (`caddy validate`), and
+#   3. the Caddyfile adapts (`caddy validate`),
 #   4. the /api/<service>/* route list agrees with waf.tf's rate-limit expression
-#      -- the one cross-file invariant nothing else in the repo enforces -- and
-#      the @admin deny exists, actually refuses, and is ordered ahead of the
-#      routes, which is the only thing making it fire.
+#      and the @admin deny exists, actually refuses, and is ordered ahead of the
+#      routes, which is the only thing making it fire,
+#   5. the frontend's ARGUS_*_URL env values agree with the routed namespaces --
+#      the third copy of that list; a stale one sends the browser to the
+#      frontend's own catch-all with no error anywhere in this repo -- and
+#   6. every pinned image tag answers a registry manifest request -- an
+#      unpullable pin aborts `compose up` as a unit and nothing on the host
+#      starts (runbook > 521/522). Same shape as preflight.tf: ask, don't guess.
+#      Network-dependent, so transport failures warn and skip; a definitive
+#      404 fails.
 #
-# Needs: terraform, python3 (+pyyaml), bash. Uses `caddy` if present, else the
-# caddy Docker image; skips check 3 with a warning if neither is available.
+# Checks 4-5 are the cross-file invariants nothing else in the repo enforces.
+#
+# Needs: terraform, python3 (+pyyaml), bash, curl. Uses `caddy` if present, else
+# the caddy Docker image; skips check 3 with a warning if neither is available.
 
 set -euo pipefail
 
@@ -247,5 +256,97 @@ if prefixes != want:
 print(f"  routed namespaces: {sorted(routed)}")
 print(f"  rate-limited:      {sorted(limited)} (+ subtrees, lowercased)")
 PY
+
+say "checking the frontend's ARGUS_*_URL env agrees with the routes"
+python3 - "$work/demo--compose.yaml" "$caddyfile" <<'PY'
+import re, sys, yaml
+
+compose = yaml.safe_load(open(sys.argv[1]))
+caddyfile = open(sys.argv[2]).read()
+
+routed = {m.group(1) for m in
+          re.finditer(r'^\s*handle_path\s+(/\S+?)/\*\s*\{', caddyfile, re.M)}
+
+# The frontend hands these values to the BROWSER, which resolves them against
+# the public origin -- so each one must be a namespace Caddy actually routes, or
+# every API call it issues falls through to the frontend's own catch-all and
+# gets HTML back, with nothing in this repo ever flagging it. Only the frontend
+# service is checked: .env's ARGUS_LENS_URL is curator's server-side handoff
+# (compose DNS, http://lens:8100), a different value on purpose.
+env = compose["services"]["frontend"].get("environment") or []
+urls = {}
+for entry in env:
+    key, _, value = str(entry).partition("=")
+    if re.fullmatch(r"ARGUS_[A-Z0-9]+_URL", key):
+        urls[key] = value
+if not urls:
+    sys.exit("error: the frontend service sets no ARGUS_*_URL -- studio 0.1.0+ resolves "
+             "its API bases from the environment per request (argus-studio#56)")
+stale = {k: v for k, v in urls.items() if v not in routed}
+if stale:
+    sys.exit(f"error: frontend ARGUS_*_URL values that match no routed namespace: {stale}; "
+             f"routed namespaces are {sorted(routed)}. A stale value sends the browser to "
+             f"the frontend catch-all -- HTML answers, not the API.")
+missing = routed - set(urls.values())
+if missing:
+    sys.exit(f"error: routed namespaces with no frontend ARGUS_*_URL: {sorted(missing)} -- "
+             f"the frontend cannot reach a namespace it is not told about")
+print(f"  frontend ARGUS_*_URL values == routed namespaces ({len(urls)})")
+PY
+
+say "checking every pinned image tag is pullable"
+# Pins live only inside the rendered compose files, so a typo'd or unpublished
+# tag passes fmt/validate/plan -- and then `docker compose up -d` fails as a
+# unit on the host: nothing starts, Caddy never binds, Cloudflare serves
+# 521/522 (the repo has the near-miss on record: argus-quarry v0.2.2 looked
+# releasable but never published). Ask each registry for the manifest, exactly
+# preflight.tf's move. Anonymous pull tokens suffice for public images; a
+# transport failure warns and skips so an offline run still passes, a
+# definitive 404 fails the build.
+images="$(python3 - "$work/demo--compose.yaml" "$work/core--compose.yaml" <<'PY'
+import sys, yaml
+seen = []
+for p in sys.argv[1:]:
+    doc = yaml.safe_load(open(p))
+    for svc in (doc.get("services") or {}).values():
+        img = svc.get("image")
+        if img and img not in seen:
+            seen.append(img)
+print("\n".join(seen))
+PY
+)"
+while IFS= read -r image; do
+  [ -n "$image" ] || continue
+  ref="$image"; case "$ref" in *:*) ;; *) ref="$ref:latest";; esac
+  name="${ref%:*}" tag="${ref##*:}"
+  case "$name" in
+    ghcr.io/*) registry="ghcr.io"; path="${name#ghcr.io/}"
+               token_url="https://ghcr.io/token?scope=repository:$path:pull" ;;
+    quay.io/*) registry="quay.io"; path="${name#quay.io/}"
+               token_url="https://quay.io/v2/auth?service=quay.io&scope=repository:$path:pull" ;;
+    */*)       registry="registry-1.docker.io"; path="$name"
+               token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:$path:pull" ;;
+    *)         registry="registry-1.docker.io"; path="library/$name"
+               token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:$path:pull" ;;
+  esac
+  token="$(curl -fsS --max-time 15 "$token_url" 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)"
+  if [ -z "$token" ]; then
+    warn "no anonymous pull token for $image -- skipping pullability check (network?)"
+    continue
+  fi
+  code="$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://$registry/v2/$path/manifests/$tag" || true)"
+  case "$code" in
+    200) echo "  $image: pullable" ;;
+    404) die "$image is NOT pullable (manifest 404). An unpullable pin aborts the whole
+       stack at compose up -- nothing on the host starts (runbook > 521/522). Fix
+       the tag before applying." ;;
+    000|"") warn "no answer from $registry for $image -- skipping pullability check (network?)" ;;
+    *)   warn "unexpected HTTP $code from $registry for $image -- not treating as missing" ;;
+  esac
+done <<< "$images"
 
 say "all cloud-init checks passed"
