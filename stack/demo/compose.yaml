@@ -1,0 +1,156 @@
+# Demo tier service definitions. Fetched onto the host by /opt/argus/argus-update
+# and applied by stack/demo/apply.sh -- NOT baked into user_data, so bumping a
+# pin or adding a tier is a merge plus an in-place update, not a public-host
+# replacement (which also discarded caddy_data and the origin cert, #18).
+#
+# ${VAR} references are docker-compose interpolation, resolved at `compose up`
+# from /opt/argus/.env + /opt/argus/deploy.env (apply.sh exports both). The
+# mount targets reuse the same variables the services read via env_file, so
+# the two cannot drift.
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      # Resolves the {$DOMAIN} site address in the Caddyfile.
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - /opt/argus/stack/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+  frontend:
+    # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
+    # Pinned now that studio publishes releases (argus-halo#2 -- this was
+    # the last :latest in the stack).
+    #
+    # 0.1.0 ships the argus-studio#56 fix: API base URLs are resolved from
+    # the container environment PER REQUEST, not baked into the bundle at
+    # build time -- which is what makes this `environment:` block work at
+    # all (the pre-#56 comment here said the opposite, and was right then).
+    # Each URL is a path prefix on this origin, matching the Caddyfile
+    # namespaces; studio hands them to the browser, which requests
+    # /api/<service>/* and never needs a second origin or CORS.
+    image: ghcr.io/smk762/argus-studio:0.1.0
+    restart: unless-stopped
+    # Deliberately not env_file: /opt/argus/.env carries the caption API
+    # key and CORTEX_* store credentials, none of which belong in the
+    # frontend container.
+    environment:
+      - ARGUS_LENS_URL=/api/lens
+      - ARGUS_CURATOR_URL=/api/curator
+      - ARGUS_QUARRY_URL=/api/quarry
+      - ARGUS_FORGE_URL=/api/forge
+      - ARGUS_PROOF_URL=/api/proof
+      # demo = the bundled read-only sample scan. A UI flag, not a boundary
+      # (README > Security): curator's server-side containment is what
+      # holds against curl. Flipping this to `live` is a UI decision, not
+      # a security change -- the API surface is identical either way.
+      # (live mode would also want ARGUS_CURATOR_SOURCE_PATH set to the
+      # same path as ARGUS_CURATOR_SCAN_ROOT in .env, so the folder
+      # picker starts somewhere real.)
+      - ARGUS_CURATOR_UI_MODE=demo
+
+  lens:
+    # No GPU on this box by design. Backend + endpoint come from .env,
+    # currently ARGUS_BACKEND=openai-compat -> Cerebras.
+    #
+    # 0.5.0 SHIPS the lineage-replay backend (argus-lens#45) -- the intended
+    # end state, a caption path that needs no live model. It is not switched
+    # on yet: replay reads the CORTEX_* stores, which are still marked
+    # RESERVED in .env (no consumer had shipped). Flipping ARGUS_BACKEND to
+    # replay and un-reserving CORTEX_* is the follow-up; the image is bumped
+    # now so that change is one line, not an image bump plus a backend swap.
+    # Route surface is identical to 0.4.0 (verified), so this bump is inert.
+    image: ghcr.io/smk762/argus-lens:0.5.0
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    command: ["argus-lens", "serve", "--cors", "--port", "8100"]
+
+  curator:
+    # [server] only -- the gpu extra is for detectors/embeddings we don't run here.
+    # Pinned to >=0.2.0: server-side scan/export path containment (argus-halo#1).
+    # ARGUS_CURATOR_SCAN_ROOT (set in .env) is what arms that containment.
+    #
+    # MOVING THIS PIN IS A SECURITY CHANGE. Caddy routes /api/curator/* as a
+    # passthrough, so curator's own gating IS the public boundary -- there is
+    # no route whitelist behind it any more. The behaviour relied on was
+    # verified against exactly this tag (#19): empty ARGUS_CURATOR_EXPORT_ROOT
+    # refuses /export, scan/folders reject paths outside the mount root, and
+    # mode=move is 403. Re-run those probes before bumping; a release that
+    # relaxed any of them would widen the public surface with no diff here.
+    # 0.2.0 -> 0.2.1 was re-probed on 2026-07-23 and is byte-identical on all
+    # six checks, which is what the rule above is for.
+    image: ghcr.io/smk762/argus-curator:0.2.1
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    command: ["argus-curator", "serve", "--cors", "--port", "8101"]
+    volumes:
+      - /srv/argus/samples:${ARGUS_CURATOR_SCAN_ROOT}:ro
+
+  # --- full-suite tiers (#7) -----------------------------------------
+  # Reached only through Caddy's /api/<service>/* namespaces; no published
+  # ports, same as curator/lens. All three are read-only or replay here --
+  # the box has no GPU by design, and #10 fixed the posture at 2 x CX23.
+  quarry:
+    # Provenance gallery. 0.2.3 is the ROLLBACK FLOOR while the mount
+    # below is :ro -- it is the first published release whose store opens
+    # a read-only QUARRY_HOME (argus-quarry#5: SQLite in ro mode, no
+    # mkdir on the read path). 0.2.1 opens the pool read-write, which
+    # EROFSes behind :ro, so rolling back to it means also reverting the
+    # mount; 0.2.2 was never published (its release gate failed, fixed in
+    # 0.2.3 -- argus-quarry#10); 0.2.0's image cannot serve at all
+    # (missing the [server] extra, argus-quarry#3). Note quarry also has
+    # a /thumb: it does not collide with curator's because each sits
+    # under its own namespace.
+    #
+    # :ro at last, like every other tier mount -- the "read-only
+    # provenance API" (all GETs) is now backed by a mount that enforces
+    # it, instead of relying on there being no public write path. The
+    # pool must arrive self-contained and world-readable: build-tape.sh
+    # checkpoints the SQLite WAL at pack time (0.2.3 refuses to serve an
+    # un-checkpointed -wal from a read-only mount) and restore-seed.sh
+    # grants a+rX per tier, since 0.2.3 runs as uid 10001, not root
+    # (argus-quarry#8).
+    image: ghcr.io/smk762/argus-quarry:0.2.3
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    volumes:
+      - /srv/argus/quarry:${QUARRY_HOME}:ro
+
+  forge:
+    # Config renderer. Training is refused by default (403) -- see .env.
+    image: ghcr.io/smk762/argus-forge:0.1.1
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    volumes:
+      - /srv/argus/exports:${ARGUS_FORGE_EXPORT_ROOT}:ro
+
+  proof:
+    # Evaluation replay. 0.2.0 is the first tag carrying read-only mode
+    # (argus-proof#49); 0.1.0 exposed live GPU eval ungated, so this pin is
+    # a security boundary -- do not roll it back. Ships without the [score]
+    # stack (torch/insightface), which is what keeps it at ~170 MB (#10).
+    image: ghcr.io/smk762/argus-proof:0.2.1
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    volumes:
+      - /srv/argus/proof:${PROOF_HOME}:ro
+
+  # Host metrics for the demo tier. Listens on :9100 across interfaces but
+  # the public interface is default-deny inbound (no firewall rule opens
+  # 9100), so only core's Prometheus reaches it over the private network.
+  node-exporter:
+    # Pinned like the stores: a container recreate should not silently
+    # change the thing reporting on the host.
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--web.listen-address=:9100"
+    volumes: ["/:/host:ro,rslave"]
+
+volumes:
+  caddy_data:

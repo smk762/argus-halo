@@ -1,0 +1,98 @@
+# Core tier service definitions. Fetched onto the host by /opt/argus/argus-update
+# and applied by stack/core/apply.sh -- NOT baked into user_data, so editing this
+# file (bumping a pin, adding a service) is a merge plus an in-place update, not
+# a host replacement (#18).
+#
+# ${VAR} references are docker-compose interpolation, resolved at `compose up`
+# from /opt/argus/.env + /opt/argus/deploy.env (apply.sh exports both). The same
+# .env is what services read via `env_file:` -- one file to reason about per
+# host, same as before.
+#
+# Every published port binds to ${PRIVATE_IP} -- the private interface.
+# Nothing here is reachable from the internet even if the firewall is wrong.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    ports: ["${PRIVATE_IP}:5432:5432"]
+    env_file: /opt/argus/.env
+    volumes: ["/opt/argus/data/postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus"]
+      interval: 10s
+      retries: 5
+
+  qdrant:
+    # Pinned: a Qdrant snapshot only restores to the SAME minor version, so
+    # this must match the qdrant the tape was built against. build-tape.sh
+    # reads the minor straight out of THIS line -- move the pin and the tape
+    # gate moves with it.
+    image: qdrant/qdrant:v1.18.3
+    restart: unless-stopped
+    ports: ["${PRIVATE_IP}:6333:6333"]
+    volumes: ["/opt/argus/data/qdrant:/qdrant/storage"]
+
+  minio:
+    # Pinned so first-boot restore behaves like the build/test environment.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports: ["${PRIVATE_IP}:9000:9000"]
+    env_file: /opt/argus/.env
+    volumes: ["/opt/argus/data/minio:/data"]
+
+  # --- monitoring ---------------------------------------------------
+  # Prometheus + Grafana live on core. Prometheus scrapes both tiers'
+  # node_exporter over the private network and the data services here by
+  # compose DNS. Only Grafana is reachable from the admin IP; everything
+  # else is private (tunnel to reach the Prometheus UI).
+  # All four are pinned for the same reason postgres/qdrant/minio are: a
+  # container recreate (reboot, `compose up -d`, host rebuild) must not
+  # silently roll the monitoring stack forward underneath us. Grafana in
+  # particular stores dashboards in a volume whose schema is version-bound.
+  # Bumping any of these is now `edit + merge + argus-update`, and the named
+  # volumes survive it -- the pin protects the volume AND the patch no longer
+  # destroys it (#18).
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--web.listen-address=:9100"
+    volumes: ["/:/host:ro,rslave"]
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    restart: unless-stopped
+    env_file: /opt/argus/.env
+    depends_on: [postgres]
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    restart: unless-stopped
+    # Private only -- reach the UI with `ssh -L 9090:<private_ip>:9090`.
+    ports: ["${PRIVATE_IP}:9090:9090"]
+    volumes:
+      # Rendered from prometheus.yml.tpl by apply.sh (scrape targets carry
+      # host IPs, which prometheus cannot read from the environment itself).
+      - /opt/argus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    restart: unless-stopped
+    # Host port is a compose-level value; the in-container port comes from
+    # GF_SERVER_HTTP_PORT in .env (deploy.env carries the same number as
+    # GRAFANA_PORT for this line).
+    ports: ["${GRAFANA_PORT}:${GRAFANA_PORT}"]
+    env_file: /opt/argus/.env
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - /opt/argus/stack/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus]
+
+volumes:
+  prometheus_data:
+  grafana_data:

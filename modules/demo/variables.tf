@@ -109,3 +109,13 @@ variable "lens_caption_api_key" {
   default     = ""
   sensitive   = true
 }
+
+variable "stack_tarball_url" {
+  description = <<-EOT
+    Tarball URL of the repo ref this host tracks; argus-update fetches it and
+    applies stack/demo/ from it (#18). Structural changes (pins, routes)
+    reach the host by merging and re-running argus-update, not by replacing
+    the server.
+  EOT
+  type        = string
+}

@@ -1,0 +1,100 @@
+# Cloudflare proxies in front of this and the zone is pinned to Full
+# (strict) in dns.tf -- Caddy terminates real TLS at the origin.
+#
+# {$DOMAIN} is a Caddy environment placeholder: the caddy service gets DOMAIN
+# from compose (sourced from deploy.env), so this file is host-independent and
+# ships in the fetched stack -- extending the route list is a merge plus
+# `argus-update`, not a host replacement (#18).
+#
+# One origin, one namespace per service: `/api/<service>/*` is stripped by
+# handle_path before the request reaches the backend, so curator still sees
+# /scan/folder and needs no changes. Anything unclaimed falls through to the
+# frontend, whose API base URLs point back at these prefixes (set on the
+# frontend service at runtime -- argus-studio#56, shipped in 0.1.0).
+#
+# Why a namespace and not the bare endpoint names. Enumerating each backend's
+# endpoints here meant the list had to be rediscovered every time a service
+# grew one. It also does not scale to the full suite: proof serves /reports,
+# /models, /exports and /run/stream at ITS root, which collide with the
+# frontend's pages and near-collide with curator's /export (#8).
+#
+# The trade, stated plainly: this is a passthrough, not a whitelist. Every
+# endpoint a service exposes is now reachable under its prefix, including
+# ones added by a future image bump. That is consistent with how this demo
+# already assigns responsibility -- containment is curator's job, enforced
+# server-side under ARGUS_CURATOR_SCAN_ROOT, and the proxy was never the
+# boundary (README > Security) -- but it does mean a service's own gating is
+# now load-bearing rather than backed up by the route list.
+#
+# Caveat for anything added later: the prefix is STRIPPED, so a service that
+# emits absolute URLs must be told its mount point (FastAPI: root_path) or
+# its generated links 404 at the edge.
+#
+# These prefixes and the paths in waf.tf are checked against each other by
+# scripts/check-cloud-init.sh.
+{$DOMAIN} {
+  # No service's admin surface is public. The namespaces are passthroughs,
+  # so anything a service exposes under /admin is reachable the moment the
+  # image ships it -- lens already has POST /admin/unload, which the old
+  # per-endpoint routing never reached. It is a no-op on the openai-compat
+  # backend, but it becomes a model-unload lever the moment lens runs a
+  # local model (the replay backend, argus-lens#45). One rule that holds
+  # for every tier, present and future, beats finding out per release.
+  # One wildcard pair does it: the `*` matches a single service segment,
+  # so every namespace is covered and a new tier needs no edit here.
+  # NOT `admin*` -- a trailing glob would also swallow /administrator,
+  # /adminfoo and any real route that merely starts with "admin". This
+  # matches the /admin segment and nothing longer (verified both ways).
+  #
+  # This block MUST stay ahead of the handle_path routes: Caddy evaluates
+  # handle/handle_path in source order and first match wins, so a deny
+  # placed after a route never fires. check-cloud-init.sh enforces the
+  # ordering, that this block refuses, and that it is not a proxy.
+  @admin path /api/*/admin /api/*/admin/*
+  handle @admin {
+    respond "admin endpoints are not exposed on this host" 404
+  }
+
+  handle_path /api/lens/* {
+    reverse_proxy lens:8100
+  }
+
+  handle_path /api/curator/* {
+    # /upload is an unauthenticated multipart endpoint. Scan-root containment
+    # bounds WHERE a write lands, not how big it is, and the edge rate limit
+    # counts requests, not bytes -- so cap the body here, at the only place
+    # that sees it before curator spools it to disk. Sized for the sample
+    # images curator ingests; raise it if the corpus grows.
+    request_body {
+      max_size 32MB
+    }
+    reverse_proxy curator:8101
+  }
+
+  handle_path /api/quarry/* {
+    reverse_proxy quarry:8102
+  }
+
+  handle_path /api/forge/* {
+    # forge takes POST bodies (/config renders a dry-run; /run is 403 by
+    # default) and nothing rate-limits them at the edge, so bound them
+    # here -- this box is a CX23 and an unbounded POST is the cheap DoS.
+    request_body {
+      max_size 32MB
+    }
+    reverse_proxy forge:8103
+  }
+
+  handle_path /api/proof/* {
+    # Same reasoning: /run/stream is 403 in replay mode, but the body is
+    # still read before the refusal, so bound it here too.
+    request_body {
+      max_size 32MB
+    }
+    reverse_proxy proof:8104
+  }
+
+  handle {
+    reverse_proxy frontend:3000
+  }
+}

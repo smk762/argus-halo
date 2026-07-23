@@ -50,8 +50,8 @@
 #
 # A Qdrant snapshot only restores into the SAME minor version, so the build
 # refuses to pack a tape the demo could not restore. The minor is read from the
-# qdrant image pin in modules/core/cloud-init.yaml.tftpl, so there is nothing to
-# keep in sync by hand. Override only to build against a pin that is not in this
+# qdrant image pin in stack/core/compose.yaml, so there is nothing to keep in
+# sync by hand. Override only to build against a pin that is not in this
 # checkout; the restore side re-checks the version regardless, from MANIFEST:
 #
 #     TAPE_QDRANT_MINOR  minor the restore side runs (default: read from the pin)
@@ -121,12 +121,12 @@ need pg_dump; need curl; need jq; need tar; need zstd; need docker
 # two cannot drift. The restore side independently re-checks the version it
 # actually booted with against the MANIFEST this script writes, which is what
 # catches a pin moved on only one side.
-CORE_TFTPL="$(dirname "$0")/../modules/core/cloud-init.yaml.tftpl"
+CORE_COMPOSE="$(dirname "$0")/../stack/core/compose.yaml"
 if [ -z "${TAPE_QDRANT_MINOR:-}" ]; then
   TAPE_QDRANT_MINOR="$(sed -n \
     's#^[[:space:]]*image:[[:space:]]*qdrant/qdrant:v\([0-9][0-9]*\.[0-9][0-9]*\)\..*#\1#p' \
-    "$CORE_TFTPL" 2>/dev/null | head -1)"
-  [ -n "$TAPE_QDRANT_MINOR" ] || die "could not read the qdrant pin from $CORE_TFTPL --
+    "$CORE_COMPOSE" 2>/dev/null | head -1)"
+  [ -n "$TAPE_QDRANT_MINOR" ] || die "could not read the qdrant pin from $CORE_COMPOSE --
        run this from a checkout, or set TAPE_QDRANT_MINOR to the minor core restores on."
 fi
 

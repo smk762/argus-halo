@@ -140,3 +140,22 @@ variable "lens_caption_model" {
   type        = string
   default     = "gemma-4-31b"
 }
+
+variable "stack_repo" {
+  description = "GitHub repo (owner/name) each host fetches its stack/<tier>/ from (#18)."
+  type        = string
+  default     = "smk762/argus-halo"
+}
+
+variable "stack_ref" {
+  description = <<-EOT
+    Git ref of stack_repo the hosts track: a branch, tag, or commit SHA.
+    `main` means a host converges on the current default branch every time
+    argus-update runs (boot included) -- merging to main IS the deploy
+    channel. Pin a SHA or tag here only if you want plan-time control back,
+    accepting that changing it then replaces the hosts again (it lives in
+    deploy.env, which is user_data).
+  EOT
+  type        = string
+  default     = "main"
+}

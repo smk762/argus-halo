@@ -1,4 +1,13 @@
 #cloud-config
+# Bootstrap only (#18): this user_data carries the host's config (.env,
+# deploy.env) and a fetcher. Everything structural -- compose.yaml with its
+# image pins, the Caddyfile route list, the seed-restore script -- lives in
+# the repo's stack/demo/ tree and is fetched at boot by
+# /opt/argus/argus-update, so changing any of it is a merge plus an in-place
+# update, not a public-host replacement (which also took a new IPv4 and
+# discarded the origin cert in caddy_data). What remains here changes rarely
+# and legitimately WITH the host: secrets, addresses, and the bootstrap
+# itself.
 package_update: true
 packages:
   - docker.io
@@ -35,9 +44,8 @@ write_files:
 
       # --- argus-quarry (provenance gallery) --------------------------------
       # Read-only API: every route is a GET. QUARRY_HOME is the provenance pool
-      # the tape seeds (#9), mounted :ro -- 0.2.3 is the first PUBLISHED release
-      # whose store opens a read-only QUARRY_HOME (argus-quarry#5); see the
-      # quarry service in compose.yaml for the rollback rule.
+      # the tape seeds (#9), mounted :ro -- see the quarry service in
+      # stack/demo/compose.yaml for the rollback rule.
       QUARRY_HOME=${quarry_home}
 
       # --- argus-forge (training configs) -----------------------------------
@@ -53,6 +61,8 @@ write_files:
       # forge this is NOT the default, so setting it is load-bearing
       # (argus-proof#45, released in 0.2.0 via argus-proof#49). GET /health
       # reports read_only so studio can hide the run action (argus-studio#59).
+      # PROOF_HOME itself is read by compose (the mount target), not the service.
+      PROOF_HOME=${proof_home}
       ARGUS_PROOF_READ_ONLY=1
       ARGUS_PROOF_REPORTS_DIR=${proof_home}/reports
       ARGUS_PROOF_EXPORTS_DIR=${proof_home}/exports
@@ -70,360 +80,53 @@ write_files:
       CORTEX_S3_SECRET_KEY=${minio_secret_key}
       CORTEX_S3_REGION=us-east-1
 
-  - path: /opt/argus/Caddyfile
-    content: |
-      # Cloudflare proxies in front of this and the zone is pinned to Full
-      # (strict) in dns.tf -- Caddy terminates real TLS at the origin.
-      #
-      # One origin, one namespace per service: `/api/<service>/*` is stripped by
-      # handle_path before the request reaches the backend, so curator still sees
-      # /scan/folder and needs no changes. Anything unclaimed falls through to the
-      # frontend, whose API base URLs point back at these prefixes (set on the
-      # frontend service at runtime -- argus-studio#56, shipped in 0.1.0).
-      #
-      # Why a namespace and not the bare endpoint names. Enumerating each backend's
-      # endpoints here meant the list had to be rediscovered every time a service
-      # grew one -- and since user_data is ForceNew, every such fix replaces the
-      # public host (#18). It also does not scale to the full suite: proof serves
-      # /reports, /models, /exports and /run/stream at ITS root, which collide with
-      # the frontend's pages and near-collide with curator's /export (#8).
-      #
-      # The trade, stated plainly: this is a passthrough, not a whitelist. Every
-      # endpoint a service exposes is now reachable under its prefix, including
-      # ones added by a future image bump. That is consistent with how this demo
-      # already assigns responsibility -- containment is curator's job, enforced
-      # server-side under ARGUS_CURATOR_SCAN_ROOT, and the proxy was never the
-      # boundary (README > Security) -- but it does mean a service's own gating is
-      # now load-bearing rather than backed up by the route list.
-      #
-      # Caveat for anything added later: the prefix is STRIPPED, so a service that
-      # emits absolute URLs must be told its mount point (FastAPI: root_path) or
-      # its generated links 404 at the edge.
-      #
-      # These prefixes and the paths in waf.tf are checked against each other by
-      # scripts/check-cloud-init.sh.
-      ${domain} {
-        # No service's admin surface is public. The namespaces are passthroughs,
-        # so anything a service exposes under /admin is reachable the moment the
-        # image ships it -- lens already has POST /admin/unload, which the old
-        # per-endpoint routing never reached. It is a no-op on the openai-compat
-        # backend, but it becomes a model-unload lever the moment lens runs a
-        # local model (the replay backend, argus-lens#45). One rule that holds
-        # for every tier, present and future, beats finding out per release.
-        # One wildcard pair does it: the `*` matches a single service segment,
-        # so every namespace is covered and a new tier needs no edit here.
-        # NOT `admin*` -- a trailing glob would also swallow /administrator,
-        # /adminfoo and any real route that merely starts with "admin". This
-        # matches the /admin segment and nothing longer (verified both ways).
-        #
-        # This block MUST stay ahead of the handle_path routes: Caddy evaluates
-        # handle/handle_path in source order and first match wins, so a deny
-        # placed after a route never fires. check-cloud-init.sh enforces the
-        # ordering, that this block refuses, and that it is not a proxy.
-        @admin path /api/*/admin /api/*/admin/*
-        handle @admin {
-          respond "admin endpoints are not exposed on this host" 404
-        }
-
-        handle_path /api/lens/* {
-          reverse_proxy lens:8100
-        }
-
-        handle_path /api/curator/* {
-          # /upload is an unauthenticated multipart endpoint. Scan-root containment
-          # bounds WHERE a write lands, not how big it is, and the edge rate limit
-          # counts requests, not bytes -- so cap the body here, at the only place
-          # that sees it before curator spools it to disk. Sized for the sample
-          # images curator ingests; raise it if the corpus grows.
-          request_body {
-            max_size 32MB
-          }
-          reverse_proxy curator:8101
-        }
-
-        handle_path /api/quarry/* {
-          reverse_proxy quarry:8102
-        }
-
-        handle_path /api/forge/* {
-          # forge takes POST bodies (/config renders a dry-run; /run is 403 by
-          # default) and nothing rate-limits them at the edge, so bound them
-          # here -- this box is a CX23 and an unbounded POST is the cheap DoS.
-          request_body {
-            max_size 32MB
-          }
-          reverse_proxy forge:8103
-        }
-
-        handle_path /api/proof/* {
-          # Same reasoning: /run/stream is 403 in replay mode, but the body is
-          # still read before the refusal, so bound it here too.
-          request_body {
-            max_size 32MB
-          }
-          reverse_proxy proof:8104
-        }
-
-        handle {
-          reverse_proxy frontend:3000
-        }
-      }
-
-  - path: /opt/argus/compose.yaml
+  # Non-secret deploy knobs the fetched stack reads (apply.sh sources this
+  # next to .env): the public domain for Caddy, the tape URL, and which stack
+  # this host tracks. 0600 anyway -- tape_dump_url is a presigned URL while
+  # it lives.
+  - path: /opt/argus/deploy.env
     permissions: "0600"
     content: |
-      services:
-        caddy:
-          image: caddy:2
-          restart: unless-stopped
-          ports: ["80:80", "443:443"]
-          volumes:
-            - /opt/argus/Caddyfile:/etc/caddy/Caddyfile:ro
-            - caddy_data:/data
+      STACK_TARBALL_URL=${stack_tarball_url}
+      STACK_TIER=demo
+      DOMAIN=${domain}
+      TAPE_DUMP_URL=${tape_dump_url}
 
-        frontend:
-          # argus-studio: the suite's Next.js frontend (formerly argus-vision-demo).
-          # Pinned now that studio publishes releases (argus-halo#2 -- this was
-          # the last :latest in the stack).
-          #
-          # 0.1.0 ships the argus-studio#56 fix: API base URLs are resolved from
-          # the container environment PER REQUEST, not baked into the bundle at
-          # build time -- which is what makes this `environment:` block work at
-          # all (the pre-#56 comment here said the opposite, and was right then).
-          # Each URL is a path prefix on this origin, matching the Caddyfile
-          # namespaces above; studio hands them to the browser, which requests
-          # /api/<service>/* and never needs a second origin or CORS.
-          image: ghcr.io/smk762/argus-studio:0.1.0
-          restart: unless-stopped
-          # Deliberately not env_file: /opt/argus/.env carries the caption API
-          # key and CORTEX_* store credentials, none of which belong in the
-          # frontend container.
-          environment:
-            - ARGUS_LENS_URL=/api/lens
-            - ARGUS_CURATOR_URL=/api/curator
-            - ARGUS_QUARRY_URL=/api/quarry
-            - ARGUS_FORGE_URL=/api/forge
-            - ARGUS_PROOF_URL=/api/proof
-            # demo = the bundled read-only sample scan. A UI flag, not a boundary
-            # (README > Security): curator's server-side containment is what
-            # holds against curl. Flipping this to `live` is a UI decision, not
-            # a security change -- the API surface is identical either way.
-            # (live mode would also want ARGUS_CURATOR_SOURCE_PATH set to the
-            # same path as ARGUS_CURATOR_SCAN_ROOT in .env, so the folder
-            # picker starts somewhere real.)
-            - ARGUS_CURATOR_UI_MODE=demo
-
-        lens:
-          # No GPU on this box by design. Backend + endpoint come from .env,
-          # currently ARGUS_BACKEND=openai-compat -> Cerebras.
-          #
-          # 0.5.0 SHIPS the lineage-replay backend (argus-lens#45) -- the intended
-          # end state, a caption path that needs no live model. It is not switched
-          # on yet: replay reads the CORTEX_* stores, which are still marked
-          # RESERVED in .env (no consumer had shipped). Flipping ARGUS_BACKEND to
-          # replay and un-reserving CORTEX_* is the follow-up; the image is bumped
-          # now so that change is one line, not an image bump plus a backend swap.
-          # Route surface is identical to 0.4.0 (verified), so this bump is inert.
-          image: ghcr.io/smk762/argus-lens:0.5.0
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          command: ["argus-lens", "serve", "--cors", "--port", "8100"]
-
-        curator:
-          # [server] only -- the gpu extra is for detectors/embeddings we don't run here.
-          # Pinned to >=0.2.0: server-side scan/export path containment (argus-halo#1).
-          # ARGUS_CURATOR_SCAN_ROOT (set in .env) is what arms that containment.
-          #
-          # MOVING THIS PIN IS A SECURITY CHANGE. Caddy routes /api/curator/* as a
-          # passthrough, so curator's own gating IS the public boundary -- there is
-          # no route whitelist behind it any more. The behaviour relied on was
-          # verified against exactly this tag (#19): empty ARGUS_CURATOR_EXPORT_ROOT
-          # refuses /export, scan/folders reject paths outside the mount root, and
-          # mode=move is 403. Re-run those probes before bumping; a release that
-          # relaxed any of them would widen the public surface with no diff here.
-          # 0.2.0 -> 0.2.1 was re-probed on 2026-07-23 and is byte-identical on all
-          # six checks, which is what the rule above is for.
-          image: ghcr.io/smk762/argus-curator:0.2.1
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          command: ["argus-curator", "serve", "--cors", "--port", "8101"]
-          volumes:
-            - /srv/argus/samples:${curator_scan_root}:ro
-
-        # --- full-suite tiers (#7) -----------------------------------------
-        # Reached only through Caddy's /api/<service>/* namespaces; no published
-        # ports, same as curator/lens. All three are read-only or replay here --
-        # the box has no GPU by design, and #10 fixed the posture at 2 x CX23.
-        quarry:
-          # Provenance gallery. 0.2.3 is the ROLLBACK FLOOR while the mount
-          # below is :ro -- it is the first published release whose store opens
-          # a read-only QUARRY_HOME (argus-quarry#5: SQLite in ro mode, no
-          # mkdir on the read path). 0.2.1 opens the pool read-write, which
-          # EROFSes behind :ro, so rolling back to it means also reverting the
-          # mount; 0.2.2 was never published (its release gate failed, fixed in
-          # 0.2.3 -- argus-quarry#10); 0.2.0's image cannot serve at all
-          # (missing the [server] extra, argus-quarry#3). Note quarry also has
-          # a /thumb: it does not collide with curator's because each sits
-          # under its own namespace.
-          #
-          # :ro at last, like every other tier mount -- the "read-only
-          # provenance API" (all GETs) is now backed by a mount that enforces
-          # it, instead of relying on there being no public write path. The
-          # pool must arrive self-contained and world-readable: build-tape.sh
-          # checkpoints the SQLite WAL at pack time (0.2.3 refuses to serve an
-          # un-checkpointed -wal from a read-only mount) and restore-seed.sh
-          # grants a+rX per tier, since 0.2.3 runs as uid 10001, not root
-          # (argus-quarry#8).
-          image: ghcr.io/smk762/argus-quarry:0.2.3
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          volumes:
-            - /srv/argus/quarry:${quarry_home}:ro
-
-        forge:
-          # Config renderer. Training is refused by default (403) -- see .env.
-          image: ghcr.io/smk762/argus-forge:0.1.1
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          volumes:
-            - /srv/argus/exports:${forge_export_root}:ro
-
-        proof:
-          # Evaluation replay. 0.2.0 is the first tag carrying read-only mode
-          # (argus-proof#49); 0.1.0 exposed live GPU eval ungated, so this pin is
-          # a security boundary -- do not roll it back. Ships without the [score]
-          # stack (torch/insightface), which is what keeps it at ~170 MB (#10).
-          image: ghcr.io/smk762/argus-proof:0.2.1
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          volumes:
-            - /srv/argus/proof:${proof_home}:ro
-
-        # Host metrics for the demo tier. Listens on :9100 across interfaces but
-        # the public interface is default-deny inbound (no firewall rule opens
-        # 9100), so only core's Prometheus reaches it over the private network.
-        node-exporter:
-          # Pinned like the stores: a container recreate should not silently
-          # change the thing reporting on the host.
-          image: prom/node-exporter:v1.12.1
-          restart: unless-stopped
-          network_mode: host
-          pid: host
-          command:
-            - "--path.rootfs=/host"
-            - "--web.listen-address=:9100"
-          volumes: ["/:/host:ro,rslave"]
-
-      volumes:
-        caddy_data:
-
-  - path: /opt/argus/restore-seed.sh
-    permissions: "0700"
+  # The fetch-and-apply step: pulls the repo tarball at the tracked ref,
+  # swaps the tier's stack/ subtree into place, and runs its apply.sh.
+  # Deliberately tiny and generic -- ALL tier logic lives in the fetched
+  # apply.sh, so this file (which IS ForceNew) should almost never change.
+  # Identical in both tiers' templates on purpose; only deploy.env differs.
+  # Run it over SSH any time to converge the host on the current ref:
+  #   ssh <host> /opt/argus/argus-update
+  - path: /opt/argus/argus-update
+    permissions: "0755"
     content: |
       #!/usr/bin/env bash
-      # Seeds the demo tier's read-only service data from the tape's demo/ subtree
-      # (#9): quarry pool, curated export, precomputed EvalReports, and curator's
-      # live-mode corpus (#14). Runs BEFORE `compose up` -- unlike core's
-      # restore-tape.sh, which loads INTO running stores -- because these are
-      # bind-mount SOURCES the containers read at start. Idempotent via a marker.
-      # Same archive as scripts/build-tape.sh; only demo/ is used here (core reads
-      # lineage/qdrant/blobs, which this ignores).
       set -euo pipefail
-      MARKER=/srv/argus/.seed-restored
+      # shellcheck source=/dev/null
+      . /opt/argus/deploy.env
 
-      # Baked in at plan time, so a bare re-run replays the URL this host was born
-      # with -- useless once an R2 presign has expired. TAPE_DUMP_URL overrides it:
-      #   TAPE_DUMP_URL='<fresh url>' /opt/argus/restore-seed.sh
-      TAPE_URL="$${TAPE_DUMP_URL:-${tape_dump_url}}"
-
-      [ -f "$MARKER" ] && { echo "demo seed already restored"; exit 0; }
-      # "Empty" is degraded, not broken -- except quarry: its pool is mounted
-      # :ro, so unlike the pre-0.2.3 rw mount it cannot create a store on first
-      # request, and /ready plus every data GET answer 503 until a pool is
-      # seeded. The other tiers render empty pages.
-      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, demo tiers start empty (quarry 503s until seeded -- its :ro mount forbids creating a store)"; exit 0; }
-
-      cd /srv/argus
-      # Mirror restore-tape.sh's fetch: separate transport failures from an expired
-      # presign so the message names the actual fix. See docs/runbook.md.
-      rm -f tape.tar.zst
-      curl_rc=0
-      http_code="$(curl -sSL --retry 3 --retry-all-errors --retry-delay 5 \
-        --remove-on-error -o tape.tar.zst -w '%%{http_code}' "$TAPE_URL")" || curl_rc=$?
-      if [ "$curl_rc" -ne 0 ]; then
-        rm -f tape.tar.zst
-        echo "could not fetch the tape: curl exited $curl_rc -- transport (DNS/TLS/dropped)," >&2
-        echo "not the URL. Retry before rebuilding the tape." >&2
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      echo "fetching stack ($STACK_TIER) from $STACK_TARBALL_URL"
+      curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 "$STACK_TARBALL_URL" \
+        | tar -xz -C "$tmp"
+      src="$(find "$tmp" -mindepth 3 -maxdepth 3 -type d -path "*/stack/$STACK_TIER" | head -1)"
+      [ -n "$src" ] && [ -f "$src/apply.sh" ] || {
+        echo "no stack/$STACK_TIER/apply.sh in the fetched tarball -- refusing to apply" >&2
         exit 1
-      fi
-      case "$http_code" in
-        2??) ;;
-        401|403)
-          rm -f tape.tar.zst
-          echo "the tape URL was rejected (HTTP $http_code) -- an R2 presign expires after" >&2
-          echo "7 days. Rebuild with 'make tape', then re-run PASSING the fresh URL (the one" >&2
-          echo "baked in here expired with it), and set the tape_dump_url workspace variable:" >&2
-          echo "  TAPE_DUMP_URL='<new url>' /opt/argus/restore-seed.sh" >&2
-          exit 1 ;;
-        *)
-          rm -f tape.tar.zst
-          echo "the tape fetch returned HTTP $http_code -- check what tape_dump_url points at." >&2
-          exit 1 ;;
-      esac
-
-      # An older, core-only tape has no demo/ subtree: come up empty (the pre-#9
-      # behaviour) rather than failing, since that tape is still valid for core.
-      # List once into a variable -- `tar -tf | grep -q` can SIGPIPE tar under
-      # pipefail and misreport a present subtree as absent.
-      members="$(tar --zstd -tf tape.tar.zst)" || { echo "cannot read the tape archive" >&2; exit 1; }
-      if ! printf '%s\n' "$members" | grep -q '^demo/'; then
-        echo "this tape carries no demo/ subtree -- tiers start empty (rebuild with a" >&2
-        echo "#9-aware 'make tape' to seed them; quarry 503s until then, its :ro mount" >&2
-        echo "forbids creating a store)." >&2
-        rm -f tape.tar.zst
-        exit 0
-      fi
-      rm -rf /srv/argus/tape && mkdir -p /srv/argus/tape
-      tar --zstd -xf tape.tar.zst -C /srv/argus/tape demo
-
-      # Drop each tier's tree onto its mount source. Copy the CONTENTS (-a to keep
-      # the layout the services expect) so the existing mount point is preserved.
-      seed() {  # seed <subtree> <dest>
-        local sub="/srv/argus/tape/demo/$1" dest="$2"
-        [ -d "$sub" ] || { echo "  (no $1 in tape; $dest left empty)"; return 0; }
-        mkdir -p "$dest"
-        cp -a "$sub/." "$dest/"
-        # The tape preserves whatever owners and modes the build box had (tapes
-        # older than the pack-time normalization in build-tape.sh carry them
-        # verbatim), and these trees are read through :ro mounts by images that
-        # may not run as root -- quarry 0.2.3+ is uid 10001 (argus-quarry#8) --
-        # so grant world-read (a+rX: read plus directory traversal) per tier,
-        # or every GET 500s on open(). Per seed, not after the loop, so a
-        # failure in a later tier cannot strand this one seeded-but-unreadable.
-        chmod -R a+rX "$dest"
-        echo "  seeded $dest ($(find "$sub" -type f | wc -l | tr -d ' ') files)"
       }
-      seed samples /srv/argus/samples
-      seed quarry  /srv/argus/quarry
-      seed exports /srv/argus/exports
-      seed proof   /srv/argus/proof
-
-      rm -rf /srv/argus/tape tape.tar.zst
-      touch "$MARKER"
-      echo "demo seed restored"
+      # Swap atomically-ish: never leave /opt/argus/stack half-written, and
+      # keep the previous tree one `mv` away.
+      rm -rf /opt/argus/stack.new
+      cp -a "$src" /opt/argus/stack.new
+      chmod +x /opt/argus/stack.new/*.sh
+      rm -rf /opt/argus/stack.old
+      [ -d /opt/argus/stack ] && mv /opt/argus/stack /opt/argus/stack.old
+      mv /opt/argus/stack.new /opt/argus/stack
+      exec /opt/argus/stack/apply.sh
 
 runcmd:
-  # Create every mount source before compose starts. Docker would create a
-  # missing bind source as a root-owned directory anyway, but doing it here keeps
-  # the seed layout explicit and matches what the tape restores into (#9).
-  - [mkdir, -p, /srv/argus/samples, /srv/argus/quarry, /srv/argus/exports,
-     /srv/argus/proof/reports, /srv/argus/proof/exports, /srv/argus/proof/runs]
-  # Seed the read-only mount sources BEFORE the containers that mount them start
-  # (#9). A no-op when tape_dump_url is unset or the tape predates the demo/
-  # subtree, so this never blocks boot -- though an unseeded quarry answers 503
-  # on /ready and its data routes until a pool arrives: its :ro mount forbids
-  # creating a store, unlike the pre-0.2.3 rw mount. The other tiers render
-  # empty pages.
-  - [/opt/argus/restore-seed.sh]
   - [systemctl, enable, --now, docker]
-  - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]
+  - [/opt/argus/argus-update]
