@@ -251,6 +251,26 @@ capture_tree quarry  "$SRC_QUARRY_HOME"   quarry
 capture_tree forge   "$SRC_FORGE_EXPORTS" exports
 capture_tree proof   "$SRC_PROOF_DIR"     proof
 
+# quarry's store is WAL-mode SQLite and the demo mounts its pool :ro -- quarry
+# 0.2.3+ refuses to serve a DB with a non-empty -wal sidecar from a read-only
+# mount (it cannot create the -shm there, and immutable mode would read a stale
+# snapshot; argus-quarry#5). A tape captured while the source store had an open
+# or uncleanly-closed connection carries exactly that, and it restores fine on
+# a rw mount but 503s every quarry route on the demo host. So checkpoint OUR
+# COPY into a self-contained DB before packing; the source store is untouched.
+while IFS= read -r -d '' wal; do
+  db="${wal%-wal}"
+  # An orphan sidecar with no base DB is leftover garbage -- drop it.
+  [ -f "$db" ] || { rm -f "$wal"; continue; }
+  command -v sqlite3 >/dev/null 2>&1 \
+    || die "the captured quarry pool has an un-checkpointed WAL ($(basename "$wal")), which
+       quarry cannot serve from its read-only mount. Install sqlite3 so the build can
+       checkpoint the copy, or checkpoint/stop the source store and re-run."
+  sqlite3 "$db" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null
+  rm -f "$wal" "$db-shm"
+  say "  checkpointed $(basename "$db") -- quarry serves it from a :ro mount"
+done < <(find "$work/demo" -path "$work/demo/quarry/*" -name '*-wal' -type f -print0 2>/dev/null)
+
 # --- 4. manifest + archive ---------------------------------------------------
 {
   echo "# argus tape -- restored into core on first boot (README > The tape)"
@@ -265,7 +285,16 @@ capture_tree proof   "$SRC_PROOF_DIR"     proof
 } > "$work/MANIFEST"
 
 say "packing $OUT"
-tar --zstd -cf "$OUT" -C "$work" MANIFEST lineage.sql qdrant blobs demo
+# Normalize what the archive RECORDS: both restore sides extract as root, and
+# root's tar restores recorded owners and modes verbatim -- so without this the
+# tape carries the build box's uids and any restrictive local modes (0600
+# SQLite files) straight onto the demo tiers, which non-root images read
+# through :ro mounts (quarry 0.2.3+ is uid 10001). --mode is symbolic-chmod
+# style, so X keeps directories traversable and preserves existing exec bits
+# without adding any. restore-seed.sh still chmods per tier as a backstop for
+# tapes built before this line.
+tar --zstd --owner=0 --group=0 --mode='u=rwX,go=rX' \
+  -cf "$OUT" -C "$work" MANIFEST lineage.sql qdrant blobs demo
 say "built $OUT ($(du -h "$OUT" | cut -f1)) -- ${pg_rows} lineage rows, ${qdrant_count} collections, ${blob_count} blobs, ${demo_files} demo-seed files"
 
 # --- 5. upload to R2 (opt-in) ------------------------------------------------
