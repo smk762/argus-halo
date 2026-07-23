@@ -47,6 +47,17 @@ variable "admin_ip" {
     condition     = can(cidrhost(var.admin_ip, 0))
     error_message = "admin_ip must be in CIDR form, e.g. 203.0.113.9/32 (a bare address is not accepted)."
   }
+
+  # CIDR form alone is not the interesting question -- 0.0.0.0/0 is a perfectly
+  # valid CIDR. This value is the source_ips on SSH for both tiers and on
+  # Grafana, so an over-broad prefix opens exactly what it is meant to close,
+  # with a green plan. Guard the dangerous case, not just the cosmetic one.
+  # The first condition already reports a non-CIDR, so skip it here rather than
+  # emit two errors for one typo.
+  validation {
+    condition     = !can(cidrhost(var.admin_ip, 0)) || try(tonumber(regex("[0-9]+$", var.admin_ip)) >= 8, false)
+    error_message = "admin_ip is too broad: give a specific address or small network (prefix /8 or longer), not 0.0.0.0/0 or ::/0 -- that would open SSH and Grafana to the entire internet."
+  }
 }
 
 # --- placement ---------------------------------------------------------------

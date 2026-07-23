@@ -24,9 +24,7 @@ resource "hcloud_server" "demo" {
     tape_dump_url         = var.tape_dump_url
     quarry_home           = var.quarry_home
     forge_export_root     = var.forge_export_root
-    proof_reports_dir     = var.proof_reports_dir
-    proof_exports_dir     = var.proof_exports_dir
-    proof_runs_dir        = var.proof_runs_dir
+    proof_home            = var.proof_home
     lens_caption_base_url = var.lens_caption_base_url
     lens_caption_model    = var.lens_caption_model
     lens_caption_api_key  = var.lens_caption_api_key

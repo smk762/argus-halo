@@ -11,7 +11,8 @@ Part of the Argus suite (quarry → curator → lens → forge → proof, over [
                               │
    ┌──────────────────────────▼──────────────────────────┐
    │  demo          public, disposable          cx23     │
-   │  caddy · frontend · curator[server] · lens (replay)  │
+   │  caddy · frontend · lens · curator                  │
+   │  quarry · forge · proof                             │
    └──────────────────────────┬──────────────────────────┘
                               │  10.0.1.0/24 — private, unrouted
    ┌──────────────────────────▼──────────────────────────┐
@@ -63,7 +64,7 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 ## Security
 
-Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.0` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
+Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.1` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
 
 **What is actually reachable.** One origin, one namespace per service: Caddy routes `/api/lens/*`, `/api/curator/*`, `/api/quarry/*`, `/api/forge/*` and `/api/proof/*` to their backends, stripping the prefix so each still sees its own paths (`/api/curator/scan/folder` arrives as `/scan/folder`). Everything else falls through to the frontend. The namespaces are what make the full suite fit one origin at all — quarry and curator both serve a `/thumb`, and proof serves `/reports`, `/models` and `/exports` at its root.
 
@@ -73,7 +74,7 @@ The namespace is a **passthrough, not a whitelist** — every endpoint a service
 
 Defence in depth sits around it, none sufficient alone:
 
-- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container. `ARGUS_CURATOR_EXPORT_ROOT` is left empty, so `/export` refuses server-side. Both are **verified against the pinned image**, not assumed ([#19](https://github.com/smk762/argus-halo/issues/19)): on `argus-curator:0.2.0`, export with an empty root returns `400` and writes nothing for absolute, relative and traversal destinations; `/scan/folder` and `/folders` reject `/etc`, `/`, `../../etc` and `/srv/argus/samples/../../etc` with "path escapes the mount root"; and `mode=move` returns `403`. Re-run those probes when the curator pin moves — under a passthrough namespace, a curator release that relaxed any of them would widen the public surface with no diff here.
+- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container. `ARGUS_CURATOR_EXPORT_ROOT` is left empty, so `/export` refuses server-side. Both are **verified against the pinned image**, not assumed ([#19](https://github.com/smk762/argus-halo/issues/19)): on the pinned `argus-curator:0.2.1` (re-probed from 0.2.0, byte-identical on all six checks), export with an empty root returns `400` and writes nothing for absolute, relative and traversal destinations; `/scan/folder` and `/folders` reject `/etc`, `/`, `../../etc` and `/srv/argus/samples/../../etc` with "path escapes the mount root"; and `mode=move` returns `403`. Re-run those probes when the curator pin moves — under a passthrough namespace, a curator release that relaxed any of them would widen the public surface with no diff here.
 - The demo tier holds no database; the stores are private-network only.
 - `/api/lens/caption`, `/api/curator/scan` and `/api/curator/upload` are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP): the first two protect the metered captioning key, and upload is the one unauthenticated write. The rule lowercases the path first, because Caddy matches case-insensitively and Cloudflare doesn't — without that, `/API/LENS/CAPTION/x` would route to lens and skip the limit.
 - `/api/curator/folders` and `/api/curator/thumb` are deliberately **not** rate-limited: a folder view fires thumb once per tile, so a 15/min cap would trip on one legitimate page load. Free-plan Cloudflare allows a single rule, so the cap goes where the cost is.
@@ -153,8 +154,10 @@ block. Where each value comes from:
 
 **Two honest caveats, both tracked:**
 
-- **`CORTEX_*` is reserved, not yet consumed.** The pinned `argus-lens 0.4.0` and
-  `argus-curator 0.2.0` images read *none* of the `CORTEX_*` variables — so the
+- **`CORTEX_*` is reserved, not yet consumed.** The pinned `argus-lens 0.5.0` and
+  `argus-curator 0.2.1` images read *none* of the `CORTEX_*` variables as
+  configured here — 0.5.0 ships the replay backend that would, but
+  `ARGUS_BACKEND` stays `openai-compat` — so the
   core store tier is provisioned but idle from the app tier's point of view. It's
   wired now so a lineage-replay backend drops in without re-plumbing
   ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)).

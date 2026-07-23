@@ -23,10 +23,11 @@ write_files:
       ARGUS_LENS_URL=http://lens:8100
 
       # --- argus-lens (captioning) ------------------------------------------
-      # No GPU on this box and lens 0.4.0 has no lineage-replay backend
-      # (argus-lens#45), so caption through an OpenAI-compatible vision endpoint
-      # (default: Cerebras gemma-4-31b). Switch to the replay backend when #45
-      # lands and CORTEX_* below start being consumed.
+      # No GPU on this box. lens 0.5.0 SHIPS the lineage-replay backend
+      # (argus-lens#45) but it is not switched on: ARGUS_BACKEND stays
+      # openai-compat, so captions come from an OpenAI-compatible vision
+      # endpoint (default: Cerebras gemma-4-31b). Flip ARGUS_BACKEND to replay
+      # once the CORTEX_* stores below are consumed.
       ARGUS_BACKEND=openai-compat
       ARGUS_OPENAI_COMPAT_BASE_URL=${lens_caption_base_url}
       ARGUS_OPENAI_COMPAT_MODEL=${lens_caption_model}
@@ -34,7 +35,9 @@ write_files:
 
       # --- argus-quarry (provenance gallery) --------------------------------
       # Read-only API: every route is a GET (/photos, /stats, /subjects, /thumb).
-      # QUARRY_HOME is the provenance pool the tape seeds (#9); mounted read-only.
+      # QUARRY_HOME is the provenance pool the tape seeds (#9). Its mount is
+      # read-WRITE, not :ro -- quarry opens its SQLite store read-write on every
+      # request; see the quarry service in compose.yaml for the full reasoning.
       QUARRY_HOME=${quarry_home}
 
       # --- argus-forge (training configs) -----------------------------------
@@ -51,9 +54,9 @@ write_files:
       # (argus-proof#45, released in 0.2.0 via argus-proof#49). GET /health
       # reports read_only so studio can hide the run action (argus-studio#59).
       ARGUS_PROOF_READ_ONLY=1
-      ARGUS_PROOF_REPORTS_DIR=${proof_reports_dir}
-      ARGUS_PROOF_EXPORTS_DIR=${proof_exports_dir}
-      ARGUS_PROOF_RUNS_DIR=${proof_runs_dir}
+      ARGUS_PROOF_REPORTS_DIR=${proof_home}/reports
+      ARGUS_PROOF_EXPORTS_DIR=${proof_home}/exports
+      ARGUS_PROOF_RUNS_DIR=${proof_home}/runs
 
       # --- cortex store contract (RESERVED, not yet consumed) ---------------
       # The stores exist on core, but lens/curator 0.x do not read CORTEX_* yet
@@ -106,10 +109,17 @@ write_files:
         # backend, but it becomes a model-unload lever the moment lens runs a
         # local model (the replay backend, argus-lens#45). One rule that holds
         # for every tier, present and future, beats finding out per release.
-        # Bare + subtree per service, NOT `admin*` -- a trailing glob would also
-        # swallow /administrator, /adminfoo and any real route that merely starts
-        # with "admin". This matches the /admin segment and nothing longer.
-        @admin path /api/lens/admin /api/lens/admin/* /api/curator/admin /api/curator/admin/* /api/quarry/admin /api/quarry/admin/* /api/forge/admin /api/forge/admin/* /api/proof/admin /api/proof/admin/*
+        # One wildcard pair does it: the `*` matches a single service segment,
+        # so every namespace is covered and a new tier needs no edit here.
+        # NOT `admin*` -- a trailing glob would also swallow /administrator,
+        # /adminfoo and any real route that merely starts with "admin". This
+        # matches the /admin segment and nothing longer (verified both ways).
+        #
+        # This block MUST stay ahead of the handle_path routes: Caddy evaluates
+        # handle/handle_path in source order and first match wins, so a deny
+        # placed after a route never fires. check-cloud-init.sh enforces the
+        # ordering, that this block refuses, and that it is not a proxy.
+        @admin path /api/*/admin /api/*/admin/*
         handle @admin {
           respond "admin endpoints are not exposed on this host" 404
         }
@@ -135,10 +145,21 @@ write_files:
         }
 
         handle_path /api/forge/* {
+          # forge takes POST bodies (/config renders a dry-run; /run is 403 by
+          # default) and nothing rate-limits them at the edge, so bound them
+          # here -- this box is a CX23 and an unbounded POST is the cheap DoS.
+          request_body {
+            max_size 32MB
+          }
           reverse_proxy forge:8103
         }
 
         handle_path /api/proof/* {
+          # Same reasoning: /run/stream is 403 in replay mode, but the body is
+          # still read before the refusal, so bound it here too.
+          request_body {
+            max_size 32MB
+          }
           reverse_proxy proof:8104
         }
 
@@ -260,7 +281,7 @@ write_files:
           restart: unless-stopped
           env_file: /opt/argus/.env
           volumes:
-            - /srv/argus/proof:/srv/argus/proof:ro
+            - /srv/argus/proof:${proof_home}:ro
 
         # Host metrics for the demo tier. Listens on :9100 across interfaces but
         # the public interface is default-deny inbound (no firewall rule opens
