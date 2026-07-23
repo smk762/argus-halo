@@ -4,6 +4,8 @@ packages:
   - docker.io
   - docker-compose-v2
   - curl
+  # restore-seed.sh untars the tape's demo/ subtree; zstd is not in the base image.
+  - zstd
 
 write_files:
   # Single source of truth for this host's runtime config, rendered by
@@ -21,10 +23,11 @@ write_files:
       ARGUS_LENS_URL=http://lens:8100
 
       # --- argus-lens (captioning) ------------------------------------------
-      # No GPU on this box and lens 0.4.0 has no lineage-replay backend
-      # (argus-lens#45), so caption through an OpenAI-compatible vision endpoint
-      # (default: Cerebras gemma-4-31b). Switch to the replay backend when #45
-      # lands and CORTEX_* below start being consumed.
+      # No GPU on this box. lens 0.5.0 SHIPS the lineage-replay backend
+      # (argus-lens#45) but it is not switched on: ARGUS_BACKEND stays
+      # openai-compat, so captions come from an OpenAI-compatible vision
+      # endpoint (default: Cerebras gemma-4-31b). Flip ARGUS_BACKEND to replay
+      # once the CORTEX_* stores below are consumed.
       ARGUS_BACKEND=openai-compat
       ARGUS_OPENAI_COMPAT_BASE_URL=${lens_caption_base_url}
       ARGUS_OPENAI_COMPAT_MODEL=${lens_caption_model}
@@ -32,7 +35,9 @@ write_files:
 
       # --- argus-quarry (provenance gallery) --------------------------------
       # Read-only API: every route is a GET (/photos, /stats, /subjects, /thumb).
-      # QUARRY_HOME is the provenance pool the tape seeds (#9); mounted read-only.
+      # QUARRY_HOME is the provenance pool the tape seeds (#9). Its mount is
+      # read-WRITE, not :ro -- quarry opens its SQLite store read-write on every
+      # request; see the quarry service in compose.yaml for the full reasoning.
       QUARRY_HOME=${quarry_home}
 
       # --- argus-forge (training configs) -----------------------------------
@@ -49,9 +54,9 @@ write_files:
       # (argus-proof#45, released in 0.2.0 via argus-proof#49). GET /health
       # reports read_only so studio can hide the run action (argus-studio#59).
       ARGUS_PROOF_READ_ONLY=1
-      ARGUS_PROOF_REPORTS_DIR=${proof_reports_dir}
-      ARGUS_PROOF_EXPORTS_DIR=${proof_exports_dir}
-      ARGUS_PROOF_RUNS_DIR=${proof_runs_dir}
+      ARGUS_PROOF_REPORTS_DIR=${proof_home}/reports
+      ARGUS_PROOF_EXPORTS_DIR=${proof_home}/exports
+      ARGUS_PROOF_RUNS_DIR=${proof_home}/runs
 
       # --- cortex store contract (RESERVED, not yet consumed) ---------------
       # The stores exist on core, but lens/curator 0.x do not read CORTEX_* yet
@@ -104,10 +109,17 @@ write_files:
         # backend, but it becomes a model-unload lever the moment lens runs a
         # local model (the replay backend, argus-lens#45). One rule that holds
         # for every tier, present and future, beats finding out per release.
-        # Bare + subtree per service, NOT `admin*` -- a trailing glob would also
-        # swallow /administrator, /adminfoo and any real route that merely starts
-        # with "admin". This matches the /admin segment and nothing longer.
-        @admin path /api/lens/admin /api/lens/admin/* /api/curator/admin /api/curator/admin/* /api/quarry/admin /api/quarry/admin/* /api/forge/admin /api/forge/admin/* /api/proof/admin /api/proof/admin/*
+        # One wildcard pair does it: the `*` matches a single service segment,
+        # so every namespace is covered and a new tier needs no edit here.
+        # NOT `admin*` -- a trailing glob would also swallow /administrator,
+        # /adminfoo and any real route that merely starts with "admin". This
+        # matches the /admin segment and nothing longer (verified both ways).
+        #
+        # This block MUST stay ahead of the handle_path routes: Caddy evaluates
+        # handle/handle_path in source order and first match wins, so a deny
+        # placed after a route never fires. check-cloud-init.sh enforces the
+        # ordering, that this block refuses, and that it is not a proxy.
+        @admin path /api/*/admin /api/*/admin/*
         handle @admin {
           respond "admin endpoints are not exposed on this host" 404
         }
@@ -133,10 +145,21 @@ write_files:
         }
 
         handle_path /api/forge/* {
+          # forge takes POST bodies (/config renders a dry-run; /run is 403 by
+          # default) and nothing rate-limits them at the edge, so bound them
+          # here -- this box is a CX23 and an unbounded POST is the cheap DoS.
+          request_body {
+            max_size 32MB
+          }
           reverse_proxy forge:8103
         }
 
         handle_path /api/proof/* {
+          # Same reasoning: /run/stream is 403 in replay mode, but the body is
+          # still read before the refusal, so bound it here too.
+          request_body {
+            max_size 32MB
+          }
           reverse_proxy proof:8104
         }
 
@@ -258,7 +281,7 @@ write_files:
           restart: unless-stopped
           env_file: /opt/argus/.env
           volumes:
-            - /srv/argus/proof:/srv/argus/proof:ro
+            - /srv/argus/proof:${proof_home}:ro
 
         # Host metrics for the demo tier. Listens on :9100 across interfaces but
         # the public interface is default-deny inbound (no firewall rule opens
@@ -278,11 +301,97 @@ write_files:
       volumes:
         caddy_data:
 
+  - path: /opt/argus/restore-seed.sh
+    permissions: "0700"
+    content: |
+      #!/usr/bin/env bash
+      # Seeds the demo tier's read-only service data from the tape's demo/ subtree
+      # (#9): quarry pool, curated export, precomputed EvalReports, and curator's
+      # live-mode corpus (#14). Runs BEFORE `compose up` -- unlike core's
+      # restore-tape.sh, which loads INTO running stores -- because these are
+      # bind-mount SOURCES the containers read at start. Idempotent via a marker.
+      # Same archive as scripts/build-tape.sh; only demo/ is used here (core reads
+      # lineage/qdrant/blobs, which this ignores).
+      set -euo pipefail
+      MARKER=/srv/argus/.seed-restored
+
+      # Baked in at plan time, so a bare re-run replays the URL this host was born
+      # with -- useless once an R2 presign has expired. TAPE_DUMP_URL overrides it:
+      #   TAPE_DUMP_URL='<fresh url>' /opt/argus/restore-seed.sh
+      TAPE_URL="$${TAPE_DUMP_URL:-${tape_dump_url}}"
+
+      [ -f "$MARKER" ] && { echo "demo seed already restored"; exit 0; }
+      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, demo tiers start empty"; exit 0; }
+
+      cd /srv/argus
+      # Mirror restore-tape.sh's fetch: separate transport failures from an expired
+      # presign so the message names the actual fix. See docs/runbook.md.
+      rm -f tape.tar.zst
+      curl_rc=0
+      http_code="$(curl -sSL --retry 3 --retry-all-errors --retry-delay 5 \
+        --remove-on-error -o tape.tar.zst -w '%%{http_code}' "$TAPE_URL")" || curl_rc=$?
+      if [ "$curl_rc" -ne 0 ]; then
+        rm -f tape.tar.zst
+        echo "could not fetch the tape: curl exited $curl_rc -- transport (DNS/TLS/dropped)," >&2
+        echo "not the URL. Retry before rebuilding the tape." >&2
+        exit 1
+      fi
+      case "$http_code" in
+        2??) ;;
+        401|403)
+          rm -f tape.tar.zst
+          echo "the tape URL was rejected (HTTP $http_code) -- an R2 presign expires after" >&2
+          echo "7 days. Rebuild with 'make tape', then re-run PASSING the fresh URL (the one" >&2
+          echo "baked in here expired with it), and set the tape_dump_url workspace variable:" >&2
+          echo "  TAPE_DUMP_URL='<new url>' /opt/argus/restore-seed.sh" >&2
+          exit 1 ;;
+        *)
+          rm -f tape.tar.zst
+          echo "the tape fetch returned HTTP $http_code -- check what tape_dump_url points at." >&2
+          exit 1 ;;
+      esac
+
+      # An older, core-only tape has no demo/ subtree: come up empty (the pre-#9
+      # behaviour) rather than failing, since that tape is still valid for core.
+      # List once into a variable -- `tar -tf | grep -q` can SIGPIPE tar under
+      # pipefail and misreport a present subtree as absent.
+      members="$(tar --zstd -tf tape.tar.zst)" || { echo "cannot read the tape archive" >&2; exit 1; }
+      if ! printf '%s\n' "$members" | grep -q '^demo/'; then
+        echo "this tape carries no demo/ subtree -- tiers start empty (rebuild with a" >&2
+        echo "#9-aware 'make tape' to seed them)." >&2
+        rm -f tape.tar.zst
+        exit 0
+      fi
+      rm -rf /srv/argus/tape && mkdir -p /srv/argus/tape
+      tar --zstd -xf tape.tar.zst -C /srv/argus/tape demo
+
+      # Drop each tier's tree onto its mount source. Copy the CONTENTS (-a to keep
+      # the layout the services expect) so the existing mount point is preserved.
+      seed() {  # seed <subtree> <dest>
+        local sub="/srv/argus/tape/demo/$1" dest="$2"
+        [ -d "$sub" ] || { echo "  (no $1 in tape; $dest left empty)"; return 0; }
+        mkdir -p "$dest"
+        cp -a "$sub/." "$dest/"
+        echo "  seeded $dest ($(find "$sub" -type f | wc -l | tr -d ' ') files)"
+      }
+      seed samples /srv/argus/samples
+      seed quarry  /srv/argus/quarry
+      seed exports /srv/argus/exports
+      seed proof   /srv/argus/proof
+
+      rm -rf /srv/argus/tape tape.tar.zst
+      touch "$MARKER"
+      echo "demo seed restored"
+
 runcmd:
   # Create every mount source before compose starts. Docker would create a
   # missing bind source as a root-owned directory anyway, but doing it here keeps
   # the seed layout explicit and matches what the tape restores into (#9).
   - [mkdir, -p, /srv/argus/samples, /srv/argus/quarry, /srv/argus/exports,
      /srv/argus/proof/reports, /srv/argus/proof/exports, /srv/argus/proof/runs]
+  # Seed the read-only mount sources BEFORE the containers that mount them start
+  # (#9). A no-op when tape_dump_url is unset or the tape predates the demo/
+  # subtree, so this never blocks boot.
+  - [/opt/argus/restore-seed.sh]
   - [systemctl, enable, --now, docker]
   - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]

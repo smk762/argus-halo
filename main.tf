@@ -90,6 +90,10 @@ module "demo" {
   minio_access_key   = module.core.minio_access_key
   minio_secret_key   = random_password.minio.result
 
+  # Same tape core restores, but the demo host reads only its demo/ subtree to
+  # seed the quarry/forge/proof/samples mounts (#9). One URL to rotate.
+  tape_dump_url = var.tape_dump_url
+
   # Captioning backend (interim, until lens replay lands -- argus-lens#45).
   lens_caption_api_key  = var.lens_caption_api_key
   lens_caption_base_url = var.lens_caption_base_url

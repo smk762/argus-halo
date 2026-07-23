@@ -14,8 +14,10 @@
 #   2. every embedded script is syntactically valid bash (and shellcheck-clean,
 #      if shellcheck is installed),
 #   3. the Caddyfile adapts (`caddy validate`), and
-#   4. the /api/<service>/* route list agrees with waf.tf's rate-limit expression --
-#      the one cross-file invariant nothing else in the repo enforces.
+#   4. the /api/<service>/* route list agrees with waf.tf's rate-limit expression
+#      -- the one cross-file invariant nothing else in the repo enforces -- and
+#      the @admin deny exists, actually refuses, and is ordered ahead of the
+#      routes, which is the only thing making it fire.
 #
 # Needs: terraform, python3 (+pyyaml), bash. Uses `caddy` if present, else the
 # caddy Docker image; skips check 3 with a warning if neither is available.
@@ -48,11 +50,10 @@ output "demo" {
     minio_secret_key      = "placeholder"
     curator_scan_root     = "/srv/argus/samples"
     curator_export_root   = ""
+    tape_dump_url         = "https://example.test/tape.tar.zst"
     quarry_home           = "/srv/argus/quarry"
     forge_export_root     = "/srv/argus/exports"
-    proof_reports_dir     = "/srv/argus/proof/reports"
-    proof_exports_dir     = "/srv/argus/proof/exports"
-    proof_runs_dir        = "/srv/argus/proof/runs"
+    proof_home            = "/srv/argus/proof"
     lens_caption_base_url = "https://api.cerebras.ai/v1"
     lens_caption_model    = "gemma-4-31b"
     lens_caption_api_key  = "placeholder"
@@ -89,7 +90,8 @@ import sys, os, yaml
 
 work = sys.argv[1]
 expected = {
-    "demo": {"/opt/argus/.env", "/opt/argus/Caddyfile", "/opt/argus/compose.yaml"},
+    "demo": {"/opt/argus/.env", "/opt/argus/Caddyfile", "/opt/argus/compose.yaml",
+             "/opt/argus/restore-seed.sh"},
     "core": {"/opt/argus/.env", "/opt/argus/compose.yaml", "/opt/argus/prometheus.yml",
              "/opt/argus/grafana/provisioning/datasources/prometheus.yml",
              "/opt/argus/restore-tape.sh"},
@@ -116,7 +118,8 @@ for tier, want in expected.items():
 PY
 
 say "checking embedded shell"
-for s in "$work"/*restore-tape.sh; do
+# Both restore scripts: core's restore-tape.sh and the demo host's restore-seed.sh.
+for s in "$work"/*restore-*.sh; do
   [ -e "$s" ] || continue
   bash -n "$s" || die "rendered $(basename "$s") is not valid bash"
   echo "  $(basename "$s"): bash -n ok"
@@ -164,31 +167,54 @@ if bad:
              f"Bare endpoint names collide across services -- see issue #8.")
 
 # The namespaces are passthroughs, so every service's /admin subtree must be
-# explicitly denied ahead of the routes -- otherwise an image that ships an admin
-# endpoint (lens already has POST /admin/unload) exposes it publicly on the next
-# pull, with no diff here. Require a bare+subtree deny for each routed namespace,
-# spelled as a pair rather than `admin*` (which would also catch /administrator).
-admin_paths = set()
-m = re.search(r'@admin\s+path\s+([^\n]+)', caddyfile)
-if m:
-    admin_paths = set(m.group(1).split())
-missing = []
-for ns in routed:
-    if f"{ns}/admin" not in admin_paths or f"{ns}/admin/*" not in admin_paths:
-        missing.append(ns)
-if missing:
-    sys.exit(f"error: no @admin deny for {sorted(missing)}; every /api/<svc> namespace "
-             f"needs `{{ns}}/admin {{ns}}/admin/*` in the @admin matcher (passthrough "
-             f"exposes admin endpoints otherwise). Found: {sorted(admin_paths)}")
-stray = sorted(p for p in admin_paths if p.endswith("admin*") or p.endswith("admin/**"))
-if stray:
-    sys.exit(f"error: @admin uses an over-broad glob {stray}; use the bare+subtree "
-             f"pair (/admin and /admin/*), which does not catch /administrator.")
+# denied -- otherwise an image that ships an admin endpoint (lens already has
+# POST /admin/unload) exposes it publicly on the next pull, with no diff here.
+# One wildcard pair covers every namespace, present and future, and still does
+# not catch /administrator; anchor the search so a comment cannot stand in for
+# the real matcher.
+m = re.search(r'^\s*@admin\s+path\s+([^\n]+)', caddyfile, re.M)
+admin_paths = set(m.group(1).split()) if m else set()
+want_admin = {"/api/*/admin", "/api/*/admin/*"}
+if not want_admin <= admin_paths:
+    sys.exit(f"error: @admin must deny the wildcard pair {sorted(want_admin)}; it covers "
+             f"every /api/<svc> namespace, present and future, without catching "
+             f"/administrator. Found: {sorted(admin_paths)}")
+
+# Listing the paths is not refusing them. The block has to exist, answer with a
+# 4xx, and not proxy -- otherwise the matcher above is decoration.
+hm = re.search(r'handle\s+@admin\s*\{(.*?)\n\s*\}', caddyfile, re.S)
+if not hm:
+    sys.exit("error: no `handle @admin { ... }` block -- the @admin matcher denies nothing")
+if "reverse_proxy" in hm.group(1) or not re.search(r'respond\b[^\n]*\s4\d\d\b', hm.group(1)):
+    sys.exit(f"error: `handle @admin` must respond a 4xx and must not reverse_proxy, "
+             f"else admin paths are served rather than denied. Found: {hm.group(1).strip()!r}")
+
+# ...and it only fires if it comes FIRST. Caddy evaluates handle/handle_path in
+# source order and the first match wins, so a deny sitting after a route is dead
+# code: /api/lens/admin/unload would match /api/lens/* and proxy straight through.
+first_route = re.search(r'^\s*handle_path\s', caddyfile, re.M)
+if first_route and caddyfile.index("@admin") > first_route.start():
+    sys.exit("error: the @admin deny must appear BEFORE the handle_path routes -- Caddy "
+             "matches handle blocks in source order, so a deny placed after a route "
+             "never fires and every /api/<svc>/admin is proxied through")
+
+# A namespace added with a bare `handle` or an inline reverse_proxy would neither
+# strip its prefix nor land in `routed`, so it would silently escape both the
+# admin deny above and the waf agreement check below.
+strays = re.findall(r'^\s*(?:handle|reverse_proxy)\s+(/api/\S+)', caddyfile, re.M)
+if strays:
+    sys.exit(f"error: /api routes must be spelled `handle_path /api/<svc>/* {{...}}`, not "
+             f"bare handle or inline reverse_proxy: {sorted(set(strays))}")
 
 # Anything waf.tf rate-limits must actually be a route, and must be lowercased
 # there -- Caddy matches paths case-insensitively and the Rules language does not,
 # so a rule written against the raw path is bypassed by changing a letter's case.
-expr = waf.split("expression", 1)[1].split("\n", 1)[0].replace('\\"', '"')
+# Anchor on the attribute itself: splitting on the first "expression" substring
+# picked up any comment that happened to use the word.
+em = re.search(r'^\s*expression\s*=\s*"(.*)"\s*$', waf, re.M)
+if not em:
+    sys.exit("error: could not find the `expression = \"...\"` attribute in waf.tf")
+expr = em.group(1).replace('\\"', '"')
 
 in_set = re.search(r"in\s*\{([^}]*)\}", expr)
 limited = set(re.findall(r'"([^"]+)"', in_set.group(1))) if in_set else set()

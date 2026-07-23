@@ -23,8 +23,16 @@
 # case-insensitively but the Rules language does not, so without it a request to
 # /API/LENS/CAPTION/x routes to lens and skips this rule entirely.
 #
-# When proof lands (#8), decide explicitly whether POST /api/proof/run/stream
-# belongs here or is provably 403'd by ARGUS_PROOF_READ_ONLY -- not neither.
+# proof has landed (#8) and the question is settled: POST /api/proof/run/stream
+# is provably 403'd by ARGUS_PROOF_READ_ONLY=1, verified through the proxy
+# against the pinned image, so it is deliberately NOT metered here -- there is
+# no upstream cost or write behind it to protect.
+#
+# Known gap, tracked: this rule matches literal paths, but Caddy normalises
+# `//`, `/./` and `/../` before routing, so /api/lens//caption reaches lens as
+# /caption while matching none of the strings below. lower() closes the
+# case-folding version of this; the structural version needs Cloudflare URL
+# normalization enabled on the zone (Rules > Settings) to be closed here.
 #
 # Free-plan Cloudflare allows a single rate-limiting rule; keep it to one.
 resource "cloudflare_ruleset" "demo_ratelimit" {

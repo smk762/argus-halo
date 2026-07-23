@@ -28,6 +28,15 @@ variable "minio_secret_key" {
   sensitive = true
 }
 
+# The demo host restores the same tape core does, but reads only its demo/ subtree
+# (quarry/forge/proof/samples seed) via restore-seed.sh. Empty => tiers start
+# empty. See variables.tf (root) for the full contract and README > The tape.
+variable "tape_dump_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 variable "curator_scan_root" {
   description = <<-EOT
     Sandbox directory curator is allowed to scan. See README > Security.
@@ -48,13 +57,14 @@ variable "curator_export_root" {
 }
 
 # --- full-suite tiers (#7) ---------------------------------------------------
-# In-container paths for the three read-only/replay services. Each is bind-
-# mounted read-only from /srv/argus/<tier> on the host, which the tape seeds (#9).
-# They are container-side paths, not host paths -- changing one changes what the
-# service is told, so it must match the mount in cloud-init.
+# In-container paths for the three read-only/replay services, bind-mounted from
+# /srv/argus/<tier> on the host, which the tape seeds (#9). forge and proof are
+# mounted :ro; quarry is NOT -- its SQLite store opens read-write on every
+# request (see compose.yaml). These are container-side paths only: each one is
+# what the service is told AND the mount target, so the two cannot drift.
 
 variable "quarry_home" {
-  description = "Provenance pool quarry serves from (QUARRY_HOME). Read-only; the gallery API is all GETs."
+  description = "Provenance pool quarry serves from (QUARRY_HOME). Mounted read-write (SQLite opens rw); the public API is all GETs."
   type        = string
   default     = "/srv/argus/quarry"
 }
@@ -65,27 +75,19 @@ variable "forge_export_root" {
   default     = "/srv/argus/exports"
 }
 
-variable "proof_reports_dir" {
-  description = "Precomputed EvalReports proof replays. Read-only; live GPU eval is disabled via ARGUS_PROOF_READ_ONLY."
+# One root, not three dirs: proof's reports/exports/runs are fixed subdirectories
+# of it, so the mount and the three ARGUS_PROOF_*_DIR values are derived from a
+# single value and cannot point somewhere nothing is mounted.
+variable "proof_home" {
+  description = "Root proof replays from; reports/, exports/ and runs/ live under it. Mounted read-only -- live GPU eval is disabled via ARGUS_PROOF_READ_ONLY."
   type        = string
-  default     = "/srv/argus/proof/reports"
-}
-
-variable "proof_exports_dir" {
-  description = "Export tree proof resolves report images against."
-  type        = string
-  default     = "/srv/argus/proof/exports"
-}
-
-variable "proof_runs_dir" {
-  description = "Run directory proof reads. Never written to in replay mode."
-  type        = string
-  default     = "/srv/argus/proof/runs"
+  default     = "/srv/argus/proof"
 }
 
 # --- lens captioning backend -------------------------------------------------
-# lens 0.4.0 has no lineage-replay backend (argus-lens#45) and there is no GPU
-# here, so captions come from an OpenAI-compatible vision endpoint.
+# lens 0.5.0 ships the lineage-replay backend (argus-lens#45) but it is not
+# enabled (ARGUS_BACKEND=openai-compat) and there is no GPU here, so captions
+# come from an OpenAI-compatible vision endpoint.
 
 variable "lens_caption_base_url" {
   description = "OpenAI-compatible endpoint lens captions through. Default: Cerebras."

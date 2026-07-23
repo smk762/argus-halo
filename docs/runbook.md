@@ -65,8 +65,9 @@ are now enforced by code and need no human:
 
 - `server_type` — `plan` checks it against live Hetzner stock and names the
   working alternatives (`preflight.tf`).
-- **Curator containment** — shipped in argus-curator v0.2.0, which the demo pins,
-  and verified against that tag (#19): scan/folders/thumb/upload resolve under
+- **Curator containment** — shipped in argus-curator v0.2.0; the demo pins v0.2.1
+  and verified against that tag (#19, re-probed from 0.2.0 and byte-identical on
+  all six checks): scan/folders/thumb/upload resolve under
   `ARGUS_CURATOR_SCAN_ROOT`, `mode=move` is `403`, and `/export` — governed by the
   *separate* `ARGUS_CURATOR_EXPORT_ROOT`, left **empty** here — refuses outright.
   argus-halo#1 is closed. Re-verify when the curator pin moves: `/api/curator/*`

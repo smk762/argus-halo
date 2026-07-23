@@ -38,6 +38,26 @@ variable "ssh_public_key" {
 variable "admin_ip" {
   description = "Your source address in CIDR form, e.g. 203.0.113.9/32. SSH is restricted to this."
   type        = string
+
+  # Ask the question at plan time, like preflight.tf does for server_type. A bare
+  # address (203.0.113.9) otherwise passes plan and fails at apply on two firewall
+  # resources, in the Hetzner API's words rather than ours. cidrhost() rejects any
+  # value that is not a valid CIDR, so can() turns that into a clean plan error.
+  validation {
+    condition     = can(cidrhost(var.admin_ip, 0))
+    error_message = "admin_ip must be in CIDR form, e.g. 203.0.113.9/32 (a bare address is not accepted)."
+  }
+
+  # CIDR form alone is not the interesting question -- 0.0.0.0/0 is a perfectly
+  # valid CIDR. This value is the source_ips on SSH for both tiers and on
+  # Grafana, so an over-broad prefix opens exactly what it is meant to close,
+  # with a green plan. Guard the dangerous case, not just the cosmetic one.
+  # The first condition already reports a non-CIDR, so skip it here rather than
+  # emit two errors for one typo.
+  validation {
+    condition     = !can(cidrhost(var.admin_ip, 0)) || try(tonumber(regex("[0-9]+$", var.admin_ip)) >= 8, false)
+    error_message = "admin_ip is too broad: give a specific address or small network (prefix /8 or longer), not 0.0.0.0/0 or ::/0 -- that would open SSH and Grafana to the entire internet."
+  }
 }
 
 # --- placement ---------------------------------------------------------------
