@@ -40,7 +40,11 @@ write_files:
       ARGUS_BACKEND=openai-compat
       ARGUS_OPENAI_COMPAT_BASE_URL=${lens_caption_base_url}
       ARGUS_OPENAI_COMPAT_MODEL=${lens_caption_model}
-      ARGUS_OPENAI_COMPAT_API_KEY=${lens_caption_api_key}
+      # Single-quoted: an operator-supplied key must not word-split or expand
+      # when apply.sh sources this file; compose's env_file parser strips the
+      # quotes the same way bash does. variables.tf rejects keys that could
+      # break either parser (embedded quotes/whitespace).
+      ARGUS_OPENAI_COMPAT_API_KEY='${lens_caption_api_key}'
 
       # --- argus-quarry (provenance gallery) --------------------------------
       # Read-only API: every route is a GET. QUARRY_HOME is the provenance pool
@@ -90,7 +94,10 @@ write_files:
       STACK_TARBALL_URL=${stack_tarball_url}
       STACK_TIER=demo
       DOMAIN=${domain}
-      TAPE_DUMP_URL=${tape_dump_url}
+      # Single-quoted: a presigned URL carries `&`, which would otherwise
+      # split this line into background commands when the scripts source
+      # this file (bash, unlike compose's env_file parser, executes it).
+      TAPE_DUMP_URL='${tape_dump_url}'
 
   # The fetch-and-apply step: pulls the repo tarball at the tracked ref,
   # swaps the tier's stack/ subtree into place, and runs its apply.sh.
@@ -107,11 +114,20 @@ write_files:
       # shellcheck source=/dev/null
       . /opt/argus/deploy.env
 
+      # One converge at a time: a boot-time run and an operator's SSH run
+      # share the stack.new/stack.old scratch names and must not interleave.
+      exec 9>/opt/argus/.argus-update.lock
+      flock 9
+
       tmp="$(mktemp -d)"
       trap 'rm -rf "$tmp"' EXIT
       echo "fetching stack ($STACK_TIER) from $STACK_TARBALL_URL"
-      curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 "$STACK_TARBALL_URL" \
-        | tar -xz -C "$tmp"
+      # To a file, not a pipe: curl can only rewind (and so genuinely --retry
+      # after a mid-transfer drop) a seekable output, and --remove-on-error
+      # keeps a truncated fetch from looking like a finished download.
+      curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+        --remove-on-error -o "$tmp/stack.tgz" "$STACK_TARBALL_URL"
+      tar -xzf "$tmp/stack.tgz" -C "$tmp"
       src="$(find "$tmp" -mindepth 3 -maxdepth 3 -type d -path "*/stack/$STACK_TIER" | head -1)"
       [ -n "$src" ] && [ -f "$src/apply.sh" ] || {
         echo "no stack/$STACK_TIER/apply.sh in the fetched tarball -- refusing to apply" >&2
@@ -125,7 +141,10 @@ write_files:
       rm -rf /opt/argus/stack.old
       [ -d /opt/argus/stack ] && mv /opt/argus/stack /opt/argus/stack.old
       mv /opt/argus/stack.new /opt/argus/stack
-      exec /opt/argus/stack/apply.sh
+      # A plain call, not exec: exec would replace the shell and discard the
+      # EXIT trap above, leaking $tmp on every successful run. set -e still
+      # propagates apply.sh's exit status.
+      /opt/argus/stack/apply.sh
 
 runcmd:
   - [systemctl, enable, --now, docker]

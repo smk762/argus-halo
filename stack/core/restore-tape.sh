@@ -8,6 +8,11 @@
 # from plan-time templating -- this script ships in the fetched stack, so a
 # changed tape URL or password reaches it via those files, not a host rebuild.
 set -euo pipefail
+# Capture an operator-supplied override BEFORE sourcing: a plain assignment in
+# a sourced file overwrites the environment (set -a only marks for export, it
+# gives sourced values no default-only semantics), so deploy.env's baked
+# TAPE_DUMP_URL would otherwise clobber the fresh URL passed on the command line.
+CLI_TAPE_URL="${TAPE_DUMP_URL:-}"
 set -a
 # shellcheck source=/dev/null
 . /opt/argus/.env
@@ -18,10 +23,10 @@ set +a
 MARKER=/opt/argus/data/.tape-restored
 
 # deploy.env carries the URL the host was born with -- useless once an R2
-# presign has expired. TAPE_DUMP_URL in the environment overrides it (set -a
-# above makes the sourced value the default, an exported one wins):
+# presign has expired. An operator-supplied TAPE_DUMP_URL (captured above)
+# takes precedence:
 #   TAPE_DUMP_URL='<fresh url>' /opt/argus/stack/restore-tape.sh
-TAPE_URL="${TAPE_DUMP_URL:-}"
+TAPE_URL="${CLI_TAPE_URL:-${TAPE_DUMP_URL:-}}"
 
 [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
 [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }

@@ -113,6 +113,15 @@ variable "tape_dump_url" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    # The value is written single-quoted into /opt/argus/deploy.env, which the
+    # on-host scripts bash-source -- an embedded single quote would break the
+    # quoting and word-split the URL (presigns carry `&`). No real presigned
+    # URL contains one.
+    condition     = !can(regex("'", var.tape_dump_url))
+    error_message = "tape_dump_url must not contain a single quote: it is written quoted into /opt/argus/deploy.env, which the on-host scripts bash-source."
+  }
 }
 
 # --- lens captioning ---------------------------------------------------------
@@ -127,6 +136,14 @@ variable "lens_caption_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    # The value is written single-quoted into /opt/argus/.env, which
+    # stack/demo/apply.sh bash-sources (compose's env_file reads it too) --
+    # catch a key that would break that quoting at plan time, not on the host.
+    condition     = can(regex("^[^'[:space:]]*$", var.lens_caption_api_key))
+    error_message = "lens_caption_api_key must not contain single quotes or whitespace: it is written quoted into /opt/argus/.env, which stack/demo/apply.sh bash-sources."
+  }
 }
 
 variable "lens_caption_base_url" {

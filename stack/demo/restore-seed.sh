@@ -7,6 +7,11 @@
 # Same archive as scripts/build-tape.sh; only demo/ is used here (core reads
 # lineage/qdrant/blobs, which this ignores).
 set -euo pipefail
+# Capture an operator-supplied override BEFORE sourcing: a plain assignment in
+# a sourced file overwrites the environment (set -a only marks for export), so
+# deploy.env's baked TAPE_DUMP_URL would otherwise clobber the fresh URL
+# passed on the command line.
+CLI_TAPE_URL="${TAPE_DUMP_URL:-}"
 set -a
 # shellcheck source=/dev/null
 . /opt/argus/deploy.env
@@ -15,9 +20,10 @@ set +a
 MARKER=/srv/argus/.seed-restored
 
 # deploy.env carries the URL the host was born with -- useless once an R2
-# presign has expired. TAPE_DUMP_URL in the environment overrides it:
+# presign has expired. An operator-supplied TAPE_DUMP_URL (captured above)
+# takes precedence:
 #   TAPE_DUMP_URL='<fresh url>' /opt/argus/stack/restore-seed.sh
-TAPE_URL="${TAPE_DUMP_URL:-}"
+TAPE_URL="${CLI_TAPE_URL:-${TAPE_DUMP_URL:-}}"
 
 [ -f "$MARKER" ] && { echo "demo seed already restored"; exit 0; }
 # "Empty" is degraded, not broken -- except quarry: its pool is mounted

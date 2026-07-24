@@ -5,9 +5,9 @@
 # pipeline populated (README > The tape, step 1). Invoked via `make tape`.
 #
 # Archive layout -- the contract this script SHARES with two restore sides:
-# core's (modules/core/cloud-init.yaml.tftpl > restore-tape.sh) reads the store
-# dumps; the demo host's (modules/demo/cloud-init.yaml.tftpl > restore-seed.sh)
-# reads only the demo/ subtree. Change the layout, change all three.
+# core's (stack/core/restore-tape.sh) reads the store dumps; the demo host's
+# (stack/demo/restore-seed.sh) reads only the demo/ subtree. Change the
+# layout, change all three.
 #
 #     MANIFEST                      what's inside + counts, for eyeballing
 #     lineage.sql                   pg_dump of the lineage DAG (schema + data)
@@ -143,7 +143,7 @@ if [ "$src_qdrant_minor" != "$TAPE_QDRANT_MINOR" ]; then
   die "source Qdrant is $src_qdrant_version (minor $src_qdrant_minor) but the demo restores on
        $TAPE_QDRANT_MINOR.x -- snapshots do not cross minor versions, so this tape would fail to
        restore. Match your local Qdrant to $TAPE_QDRANT_MINOR.x, or move the qdrant pin in
-       modules/core/cloud-init.yaml.tftpl (which is where this minor is read from)."
+       stack/core/compose.yaml (which is where this minor is read from)."
 fi
 say "source qdrant $src_qdrant_version matches the restore pin ($TAPE_QDRANT_MINOR.x)"
 

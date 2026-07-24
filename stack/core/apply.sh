@@ -29,4 +29,12 @@ mkdir -p /opt/argus/data/postgres /opt/argus/data/qdrant /opt/argus/data/minio
 # named volume (grafana_data!) on the first in-place update.
 docker compose -p argus -f compose.yaml up -d --remove-orphans
 
+# prometheus.yml was re-rendered above through the same inode the container
+# mounts, but prometheus only re-reads its config on SIGHUP (the lifecycle
+# API is not enabled) -- signal it, or a merged scrape-config change silently
+# waits for the next container recreate. Harmless on first boot: the
+# container just started on the fresh render.
+docker compose -p argus -f compose.yaml kill -s SIGHUP prometheus \
+  || echo "warning: could not SIGHUP prometheus -- it keeps the previous scrape config until restarted" >&2
+
 ./restore-tape.sh

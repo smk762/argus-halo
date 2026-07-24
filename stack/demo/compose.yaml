@@ -7,6 +7,13 @@
 # from /opt/argus/.env + /opt/argus/deploy.env (apply.sh exports both). The
 # mount targets reuse the same variables the services read via env_file, so
 # the two cannot drift.
+
+# Pin the project name declaratively too (apply.sh also passes -p argus): an
+# ad-hoc invocation from /opt/argus/stack would otherwise derive the project
+# "stack" from the directory and fork a duplicate stack beside the real one,
+# orphaning caddy_data and the origin cert.
+name: argus
+
 services:
   caddy:
     image: caddy:2
@@ -16,7 +23,11 @@ services:
       # Resolves the {$DOMAIN} site address in the Caddyfile.
       - DOMAIN=${DOMAIN}
     volumes:
-      - /opt/argus/stack/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The FIXED path apply.sh installs (truncate-in-place), not the in-tree
+      # copy: argus-update swaps the stack tree by mv, and a bind mount pins
+      # the inode it resolved at container creation -- mounting the in-tree
+      # file would leave a running caddy reloading the pre-swap config.
+      - /opt/argus/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
 
   frontend:

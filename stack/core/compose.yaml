@@ -10,6 +10,13 @@
 #
 # Every published port binds to ${PRIVATE_IP} -- the private interface.
 # Nothing here is reachable from the internet even if the firewall is wrong.
+
+# Pin the project name declaratively too (apply.sh also passes -p argus): an
+# ad-hoc invocation from /opt/argus/stack would otherwise derive the project
+# "stack" from the directory and fork a duplicate stack beside the real one,
+# orphaning the named volumes.
+name: argus
+
 services:
   postgres:
     image: postgres:16

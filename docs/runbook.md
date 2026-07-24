@@ -168,9 +168,14 @@ and (demo) Caddy reload. Allow a few minutes after `apply` returns.
 **Cloud-init finished (both hosts):**
 
 ```bash
-ssh root@$(terraform output -raw demo_ipv4) 'cloud-init status --wait; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
-ssh root@$(terraform output -raw core_ipv4) 'cloud-init status --wait; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
+ssh root@$(terraform output -raw demo_ipv4) 'cloud-init status --wait; set -a; . /opt/argus/.env; . /opt/argus/deploy.env; set +a; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
+ssh root@$(terraform output -raw core_ipv4) 'cloud-init status --wait; set -a; . /opt/argus/.env; . /opt/argus/deploy.env; set +a; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
 ```
+
+The `set -a; . …` prefix matters for every hand-run `docker compose` against
+the stack file: the compose file interpolates `${VAR}` from `.env` +
+`deploy.env`, which only `apply.sh` normally exports — a bare invocation fails
+to load the file.
 
 All containers should be `running`/`healthy` (postgres has a healthcheck).
 
@@ -396,8 +401,8 @@ workspace variable.
 |---|---|---|
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
-| Demo returns 502 | a backend container is down but Caddy is up | `docker compose ps`/`logs` on demo |
-| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | `docker compose ps -a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
+| Demo returns 502 | a backend container is down but Caddy is up | the §4 `compose ps` invocation (and `logs`) on demo — the env prefix matters, the compose file interpolates from `.env`/`deploy.env` |
+| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | the §4 `compose ps` invocation with `-a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |

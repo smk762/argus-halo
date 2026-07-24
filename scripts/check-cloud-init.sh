@@ -136,6 +136,16 @@ PY
 grep -q 'gettext-base' "$repo/modules/core/cloud-init.yaml.tftpl" \
   || die "core cloud-init must install gettext-base -- stack/core/apply.sh needs envsubst"
 
+# The argus-update body is embedded in BOTH tier templates and is identical on
+# purpose (only deploy.env differs per tier) -- enforce that, or a bootstrap
+# fix lands in one template and the tiers silently run divergent ForceNew
+# bootstraps until a host replacement.
+cmp -s "$work/demo--argus-update" "$work/core--argus-update" \
+  || die "the argus-update bodies in the two cloud-init templates have diverged --
+       they are identical on purpose (only deploy.env differs per tier); apply
+       the same edit to both modules/*/cloud-init.yaml.tftpl"
+echo "  argus-update: identical in both templates"
+
 say "checking shell (stack scripts + rendered argus-update)"
 shell_targets=("$repo"/stack/*/*.sh "$work"/demo--argus-update "$work"/core--argus-update)
 for s in "${shell_targets[@]}"; do
