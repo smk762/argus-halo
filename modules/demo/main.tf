@@ -28,6 +28,7 @@ resource "hcloud_server" "demo" {
     lens_caption_base_url = var.lens_caption_base_url
     lens_caption_model    = var.lens_caption_model
     lens_caption_api_key  = var.lens_caption_api_key
+    stack_tarball_url     = var.stack_tarball_url
   })
 
   labels = {

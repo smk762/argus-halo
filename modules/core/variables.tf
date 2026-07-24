@@ -57,3 +57,13 @@ variable "grafana_port" {
   type        = number
   default     = 3000
 }
+
+variable "stack_tarball_url" {
+  description = <<-EOT
+    Tarball URL of the repo ref this host tracks; argus-update fetches it and
+    applies stack/core/ from it (#18). Structural changes (pins, monitoring)
+    reach the host by merging and re-running argus-update, not by replacing
+    the server.
+  EOT
+  type        = string
+}

@@ -155,8 +155,11 @@ terraform output -raw ssh_demo   # ssh root@<demo ip>
 terraform output -raw ssh_core   # ssh root@<core ip>
 ```
 
-cloud-init runs on first boot: installs Docker, writes `/opt/argus/compose.yaml`,
-and brings the stack up. Allow a few minutes after `apply` returns.
+cloud-init runs on first boot: installs Docker, writes the host's config
+(`/opt/argus/.env` + `/opt/argus/deploy.env`), then runs `/opt/argus/argus-update`,
+which fetches the repo's `stack/<tier>/` at the tracked ref (default `main`),
+puts it at `/opt/argus/stack/`, and runs its `apply.sh` — restore, `compose up`,
+and (demo) Caddy reload. Allow a few minutes after `apply` returns.
 
 ---
 
@@ -165,9 +168,14 @@ and brings the stack up. Allow a few minutes after `apply` returns.
 **Cloud-init finished (both hosts):**
 
 ```bash
-ssh root@$(terraform output -raw demo_ipv4) 'cloud-init status --wait; docker compose -f /opt/argus/compose.yaml ps'
-ssh root@$(terraform output -raw core_ipv4) 'cloud-init status --wait; docker compose -f /opt/argus/compose.yaml ps'
+ssh root@$(terraform output -raw demo_ipv4) 'cloud-init status --wait; set -a; . /opt/argus/.env; . /opt/argus/deploy.env; set +a; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
+ssh root@$(terraform output -raw core_ipv4) 'cloud-init status --wait; set -a; . /opt/argus/.env; . /opt/argus/deploy.env; set +a; docker compose -p argus -f /opt/argus/stack/compose.yaml ps'
 ```
+
+The `set -a; . …` prefix matters for every hand-run `docker compose` against
+the stack file: the compose file interpolates `${VAR}` from `.env` +
+`deploy.env`, which only `apply.sh` normally exports — a bare invocation fails
+to load the file.
 
 All containers should be `running`/`healthy` (postgres has a healthcheck).
 
@@ -210,6 +218,41 @@ Expect the `node` (core + demo), `postgres`, `qdrant`, and `minio` jobs all `up`
 
 ---
 
+## 4b. Update the stack in place (pins, routes, monitoring)
+
+Since #18 the service definitions — both tiers' `compose.yaml` (image pins
+included), the demo `Caddyfile`, `prometheus.yml`, and the restore scripts —
+live in this repo under `stack/<tier>/`, not in `user_data`. Each host tracks
+a ref (`stack_ref`, default `main`) and fetches its subtree via
+`/opt/argus/argus-update`, which then runs the tier's `apply.sh`.
+
+So a Grafana security patch, a service pin bump, or a new Caddy route is:
+
+```bash
+# 1. edit stack/<tier>/..., open a PR, let check-cloud-init.sh gate it, merge
+# 2. converge the affected host(s) — no terraform, no host replacement:
+ssh root@$(terraform output -raw core_ipv4) /opt/argus/argus-update
+ssh root@$(terraform output -raw demo_ipv4) /opt/argus/argus-update
+```
+
+`apply.sh` is idempotent: restores stay marker-gated, `compose up -d` touches
+only services whose definition changed, and the demo tier reloads Caddy so a
+route edit lands without dropping connections. Named volumes (`grafana_data`,
+`prometheus_data`, `caddy_data` and the origin cert) survive — that is the
+point.
+
+What still replaces a host (it lives in `user_data` on purpose): secrets and
+`.env`/`deploy.env` values (rotation, a changed `tape_dump_url` at plan time,
+`stack_ref` itself), and the `argus-update` bootstrap. Those change rarely and
+legitimately with the host; refresh the tape URL first (§5) when they do.
+
+Note the trust consequence: **merging to `main` is the deploy channel.** A
+rebuilt host converges on current `main`, and an `argus-update` run applies
+whatever is merged. Pin `stack_ref` to a tag or SHA if you want plan-time
+control back, accepting that moving the pin then replaces the hosts again.
+
+---
+
 ## 5. Seed the tape (optional)
 
 Skip for an empty-store demo. To seed from a recorded pipeline run:
@@ -234,7 +277,7 @@ Skip for an empty-store demo. To seed from a recorded pipeline run:
 
 ```bash
 ssh root@$(terraform output -raw core_ipv4) \
-  "TAPE_DUMP_URL='<the presigned url>' /opt/argus/restore-tape.sh"
+  "TAPE_DUMP_URL='<the presigned url>' /opt/argus/stack/restore-tape.sh"
 ```
 
 `restore-tape.sh` seeds all three stores — Postgres, then Qdrant (uploads each
@@ -251,7 +294,7 @@ tiers in place, delete that marker and re-run with a fresh URL:
 
 ```bash
 ssh root@$(terraform output -raw demo_ipv4) \
-  "rm -f /srv/argus/.seed-restored && TAPE_DUMP_URL='<the presigned url>' /opt/argus/restore-seed.sh"
+  "rm -f /srv/argus/.seed-restored && TAPE_DUMP_URL='<the presigned url>' /opt/argus/stack/restore-seed.sh"
 ```
 
 Re-seed through the script rather than untarring by hand: a hand-copied pool
@@ -271,7 +314,7 @@ every read through its read-only mount.
 **Qdrant minors are checked on both sides.** A snapshot only restores into a
 matching minor, so `make tape` refuses to build against a local Qdrant whose minor
 differs from the image core restores on — it reads that minor straight from
-`modules/core/cloud-init.yaml.tftpl`, so there's nothing to keep in sync by hand.
+`stack/core/compose.yaml`, so there's nothing to keep in sync by hand.
 The builder also records `qdrant_version` in `MANIFEST`, and `restore-tape.sh`
 re-checks it against the Qdrant it actually booted, *before* touching Postgres —
 so a pin moved on only one side is caught at restore time with the stores still
@@ -332,7 +375,8 @@ terraform apply -replace=random_password.grafana   # then: terraform output -raw
 ```
 
 This regenerates the secret and re-templates cloud-init; the affected host(s)
-**will be recreated** (`user_data` forces replacement). Which hosts:
+**will be recreated** (`user_data` forces replacement — secrets are the part
+that still lives there, see §4b). Which hosts:
 
 | Rotating | Rebuilds | Why |
 |---|---|---|
@@ -357,19 +401,19 @@ workspace variable.
 |---|---|---|
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
-| Demo returns 502 | a backend container is down but Caddy is up | `docker compose ps`/`logs` on demo |
-| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | `docker compose ps -a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
+| Demo returns 502 | a backend container is down but Caddy is up | the §4 `compose ps` invocation (and `logs`) on demo — the env prefix matters, the compose file interpolates from `.env`/`deploy.env` |
+| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | the §4 `compose ps` invocation with `-a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |
 | Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
 | Restore didn't run | marker present or no URL | remove `.tape-restored`, set `tape_dump_url` |
-| Core rebuilt with empty stores | presigned `tape_dump_url` expired (R2 max 7d) | `make tape`, then `TAPE_DUMP_URL='<new url>' /opt/argus/restore-tape.sh` on core — and set the workspace variable too, or the next rebuild repeats it. See §5 |
+| Core rebuilt with empty stores | presigned `tape_dump_url` expired (R2 max 7d) | `make tape`, then `TAPE_DUMP_URL='<new url>' /opt/argus/stack/restore-tape.sh` on core — and set the workspace variable too, or the next rebuild repeats it. See §5 |
 | Restore says "transport failure", not expiry | network/DNS/TLS, not the URL | retry; the script already retries 3× before giving up |
-| Restore refuses on a Qdrant version mismatch | tape built against a different Qdrant minor than core runs | rebuild the tape against core's Qdrant, or move the pin in `modules/core/cloud-init.yaml.tftpl` (build-tape.sh reads its minor from there) |
+| Restore refuses on a Qdrant version mismatch | tape built against a different Qdrant minor than core runs | rebuild the tape against core's Qdrant, or move the pin in `stack/core/compose.yaml` (build-tape.sh reads its minor from there) |
 | `make tape` aborts on a version mismatch | local Qdrant minor ≠ the pinned restore minor | match your local Qdrant; snapshots don't cross minors |
 | A backend call 404s from the browser | frontend called the bare path instead of the `/api/<service>/…` namespace | fix the frontend's base URL (argus-studio#56 made it runtime-configurable); the proxy no longer needs a per-endpoint route |
-| A whole service 404s | its `handle_path /api/<svc>/*` block is missing | add the block in the demo cloud-init, and the service to compose — see #8. Note this replaces the demo host |
+| A whole service 404s | its `handle_path /api/<svc>/*` block is missing | add the block in `stack/demo/Caddyfile`, and the service to `stack/demo/compose.yaml` — see #8. Merge, then `argus-update` on the demo host (§4b); no host replacement (#18) |
 | SSH/Grafana time out from your machine | your ISP rotated your IP; `admin_ip` no longer matches | see *Recover access after an IP change* below |
 
 Inspect a host's first-boot log:

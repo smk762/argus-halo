@@ -113,6 +113,15 @@ variable "tape_dump_url" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    # The value is written single-quoted into /opt/argus/deploy.env, which the
+    # on-host scripts bash-source -- an embedded single quote would break the
+    # quoting and word-split the URL (presigns carry `&`). No real presigned
+    # URL contains one.
+    condition     = !can(regex("'", var.tape_dump_url))
+    error_message = "tape_dump_url must not contain a single quote: it is written quoted into /opt/argus/deploy.env, which the on-host scripts bash-source."
+  }
 }
 
 # --- lens captioning ---------------------------------------------------------
@@ -127,6 +136,14 @@ variable "lens_caption_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    # The value is written single-quoted into /opt/argus/.env, which
+    # stack/demo/apply.sh bash-sources (compose's env_file reads it too) --
+    # catch a key that would break that quoting at plan time, not on the host.
+    condition     = can(regex("^[^'[:space:]]*$", var.lens_caption_api_key))
+    error_message = "lens_caption_api_key must not contain single quotes or whitespace: it is written quoted into /opt/argus/.env, which stack/demo/apply.sh bash-sources."
+  }
 }
 
 variable "lens_caption_base_url" {
@@ -139,4 +156,23 @@ variable "lens_caption_model" {
   description = "Vision-capable model id at lens_caption_base_url. Cerebras: gemma-4-31b."
   type        = string
   default     = "gemma-4-31b"
+}
+
+variable "stack_repo" {
+  description = "GitHub repo (owner/name) each host fetches its stack/<tier>/ from (#18)."
+  type        = string
+  default     = "smk762/argus-halo"
+}
+
+variable "stack_ref" {
+  description = <<-EOT
+    Git ref of stack_repo the hosts track: a branch, tag, or commit SHA.
+    `main` means a host converges on the current default branch every time
+    argus-update runs (boot included) -- merging to main IS the deploy
+    channel. Pin a SHA or tag here only if you want plan-time control back,
+    accepting that changing it then replaces the hosts again (it lives in
+    deploy.env, which is user_data).
+  EOT
+  type        = string
+  default     = "main"
 }

@@ -2,34 +2,40 @@
 #
 # Check what `terraform validate` cannot.
 #
-# validate never expands templatefile(), so everything that matters most in this
-# repo -- the cloud-init YAML, the bash embedded in it, and the Caddyfile that
-# routes the public entrypoint -- is invisible to CI. A mis-indented write_files
-# block or a bad Caddy matcher passes green and is first observed as a host that
-# doesn't boot, recoverable only by changing user_data again, i.e. by replacing
-# the server. That is an expensive way to find a typo.
+# Since #18 the service definitions live in stack/<tier>/ as plain files the
+# hosts fetch at boot/update time, and user_data carries only config + the
+# argus-update bootstrap. That splits the checks in two:
 #
-# So: render both templates with placeholder values, then assert
+#   the templates (rendered with placeholders, since validate never expands
+#   templatefile):
 #   1. the rendered document is valid YAML with the write_files we expect,
-#   2. every embedded script is syntactically valid bash (and shellcheck-clean,
-#      if shellcheck is installed),
-#   3. the Caddyfile adapts (`caddy validate`),
-#   4. the /api/<service>/* route list agrees with waf.tf's rate-limit expression
-#      and the @admin deny exists, actually refuses, and is ordered ahead of the
-#      routes, which is the only thing making it fire,
+#      and the embedded argus-update bootstrap is valid bash,
+#   2. every ${VAR} the stack's compose files interpolate is defined by the
+#      rendered .env + deploy.env -- the files and the templates are edited
+#      separately, and an undefined variable becomes an empty string on the
+#      host (an empty mount target, an unbound port) with no error anywhere,
+#
+#   the stack files (checked directly -- what you see is what ships):
+#   3. compose files parse as YAML, scripts pass bash -n (and shellcheck if
+#      installed), the Caddyfile adapts (`caddy validate`),
+#   4. the /api/<service>/* route list agrees with waf.tf's rate-limit
+#      expression and the @admin deny exists, actually refuses, and is ordered
+#      ahead of the routes, which is the only thing making it fire,
 #   5. the frontend's ARGUS_*_URL env values agree with the routed namespaces --
 #      the third copy of that list; a stale one sends the browser to the
 #      frontend's own catch-all with no error anywhere in this repo -- and
 #   6. every pinned image tag answers a registry manifest request -- an
 #      unpullable pin aborts `compose up` as a unit and nothing on the host
-#      starts (runbook > 521/522). Same shape as preflight.tf: ask, don't guess.
-#      Network-dependent, so transport failures warn and skip; a definitive
-#      404 fails.
+#      starts (runbook > 521/522). Same shape as preflight.tf: ask, don't
+#      guess. Network-dependent, so transport failures warn and skip; a
+#      definitive 404 fails.
 #
-# Checks 4-5 are the cross-file invariants nothing else in the repo enforces.
+# Checks 2 and 4-5 are the cross-file invariants nothing else in the repo
+# enforces.
 #
 # Needs: terraform, python3 (+pyyaml), bash, curl. Uses `caddy` if present, else
-# the caddy Docker image; skips check 3 with a warning if neither is available.
+# the caddy Docker image; skips the Caddyfile check with a warning if neither is
+# available.
 
 set -euo pipefail
 
@@ -66,6 +72,7 @@ output "demo" {
     lens_caption_base_url = "https://api.cerebras.ai/v1"
     lens_caption_model    = "gemma-4-31b"
     lens_caption_api_key  = "placeholder"
+    stack_tarball_url     = "https://codeload.github.com/smk762/argus-halo/tar.gz/main"
   })
 }
 
@@ -80,6 +87,7 @@ output "core" {
     demo_private_ip        = "10.0.1.20"
     grafana_admin_password = "placeholder"
     grafana_port           = 3000
+    stack_tarball_url      = "https://codeload.github.com/smk762/argus-halo/tar.gz/main"
   })
 }
 EOF
@@ -98,59 +106,112 @@ python3 - "$work" <<'PY'
 import sys, os, yaml
 
 work = sys.argv[1]
+# Bootstrap-only user_data (#18): config + the fetcher. Anything beyond this
+# set belongs in stack/<tier>/, where changing it does not replace the host.
 expected = {
-    "demo": {"/opt/argus/.env", "/opt/argus/Caddyfile", "/opt/argus/compose.yaml",
-             "/opt/argus/restore-seed.sh"},
-    "core": {"/opt/argus/.env", "/opt/argus/compose.yaml", "/opt/argus/prometheus.yml",
-             "/opt/argus/grafana/provisioning/datasources/prometheus.yml",
-             "/opt/argus/restore-tape.sh"},
+    "demo": {"/opt/argus/.env", "/opt/argus/deploy.env", "/opt/argus/argus-update"},
+    "core": {"/opt/argus/.env", "/opt/argus/deploy.env", "/opt/argus/argus-update"},
 }
 
 for tier, want in expected.items():
     doc = yaml.safe_load(open(os.path.join(work, tier + ".yaml")))
     got = {f["path"] for f in doc["write_files"]}
-    missing = want - got
-    if missing:
-        sys.exit(f"error: {tier} cloud-init lost write_files: {sorted(missing)}")
-    # compose.yaml is itself YAML -- parse it, so an indentation slip in the
-    # embedded document fails here rather than on the host.
+    if got != want:
+        sys.exit(f"error: {tier} write_files is {sorted(got)}, expected exactly "
+                 f"{sorted(want)} -- structural files belong in stack/{tier}/, "
+                 f"where a change is not a host replacement (#18)")
     for f in doc["write_files"]:
         name = os.path.basename(f["path"])
-        if name.endswith((".yaml", ".yml")):
-            yaml.safe_load(f["content"])
         out = os.path.join(work, f"{tier}--{name}")
         with open(out, "w") as fh:
             fh.write(f["content"])
     if not doc.get("runcmd"):
         sys.exit(f"error: {tier} cloud-init has no runcmd")
+    if not any("argus-update" in " ".join(map(str, cmd)) for cmd in doc["runcmd"]):
+        sys.exit(f"error: {tier} runcmd never invokes /opt/argus/argus-update -- "
+                 f"the host would boot with no services at all")
     print(f"  {tier}: YAML ok, {len(got)} write_files, {len(doc['runcmd'])} runcmd entries")
 PY
+# envsubst ships in gettext-base; core's apply.sh renders prometheus.yml with it.
+grep -q 'gettext-base' "$repo/modules/core/cloud-init.yaml.tftpl" \
+  || die "core cloud-init must install gettext-base -- stack/core/apply.sh needs envsubst"
 
-say "checking embedded shell"
-# Both restore scripts: core's restore-tape.sh and the demo host's restore-seed.sh.
-for s in "$work"/*restore-*.sh; do
+# The argus-update body is embedded in BOTH tier templates and is identical on
+# purpose (only deploy.env differs per tier) -- enforce that, or a bootstrap
+# fix lands in one template and the tiers silently run divergent ForceNew
+# bootstraps until a host replacement.
+cmp -s "$work/demo--argus-update" "$work/core--argus-update" \
+  || die "the argus-update bodies in the two cloud-init templates have diverged --
+       they are identical on purpose (only deploy.env differs per tier); apply
+       the same edit to both modules/*/cloud-init.yaml.tftpl"
+echo "  argus-update: identical in both templates"
+
+say "checking shell (stack scripts + rendered argus-update)"
+shell_targets=("$repo"/stack/*/*.sh "$work"/demo--argus-update "$work"/core--argus-update)
+for s in "${shell_targets[@]}"; do
   [ -e "$s" ] || continue
-  bash -n "$s" || die "rendered $(basename "$s") is not valid bash"
-  echo "  $(basename "$s"): bash -n ok"
+  bash -n "$s" || die "$(basename "$s") is not valid bash"
 done
+echo "  bash -n ok (${#shell_targets[@]} scripts)"
 if command -v shellcheck >/dev/null; then
-  shellcheck -S warning "$repo/scripts/build-tape.sh" "$0" || die "shellcheck failed"
-  echo "  scripts/*.sh: shellcheck ok"
+  shellcheck -S warning "$repo"/scripts/build-tape.sh "$0" "$repo"/stack/*/*.sh \
+    "$work"/demo--argus-update "$work"/core--argus-update || die "shellcheck failed"
+  echo "  shellcheck ok"
 else
-  warn "shellcheck not installed -- skipping lint of scripts/*.sh"
+  warn "shellcheck not installed -- skipping lint"
 fi
 
+say "checking stack compose files parse and interpolate"
+python3 - "$repo" "$work" <<'PY'
+import re, sys, yaml
+
+repo, work = sys.argv[1], sys.argv[2]
+
+# Every ${VAR} a compose file (or the prometheus template) interpolates must be
+# defined by the env files apply.sh sources: the rendered .env + deploy.env.
+# The two sides are edited separately; an undefined variable silently becomes
+# an empty string on the host.
+for tier in ("core", "demo"):
+    defined = set()
+    for envfile in (f"{work}/{tier}--.env", f"{work}/{tier}--deploy.env"):
+        for line in open(envfile):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                defined.add(line.split("=", 1)[0])
+    def interpolated(path):
+        # Per line, comments stripped: a ${VAR} mentioned in prose is not a
+        # reference compose would expand.
+        out = set()
+        for line in open(path):
+            if line.lstrip().startswith("#"):
+                continue
+            out |= set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", line))
+        return out
+
+    compose_path = f"{repo}/stack/{tier}/compose.yaml"
+    yaml.safe_load(open(compose_path).read())  # an indentation slip fails here, not on the host
+    used = interpolated(compose_path)
+    if tier == "core":
+        used |= interpolated(f"{repo}/stack/{tier}/prometheus.yml.tpl")
+    missing = sorted(used - defined)
+    if missing:
+        sys.exit(f"error: stack/{tier} interpolates {missing}, which the rendered "
+                 f".env + deploy.env never define -- on the host these become "
+                 f"empty strings with no error anywhere")
+    print(f"  {tier}: compose YAML ok, {len(used)} interpolated vars all defined")
+PY
+
 say "checking the Caddyfile adapts"
-caddyfile="$work/demo--Caddyfile"
-[ -f "$caddyfile" ] || die "no Caddyfile in the rendered demo cloud-init"
+caddyfile="$repo/stack/demo/Caddyfile"
+[ -f "$caddyfile" ] || die "no stack/demo/Caddyfile"
 if command -v caddy >/dev/null; then
-  caddy validate --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1 \
-    || die "caddy validate failed on the rendered Caddyfile"
+  DOMAIN=argus.example.test caddy validate --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1 \
+    || die "caddy validate failed on stack/demo/Caddyfile"
   echo "  Caddyfile: valid"
 elif command -v docker >/dev/null; then
-  docker run --rm -v "$caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 \
+  docker run --rm -e DOMAIN=argus.example.test -v "$caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 \
     caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 \
-    || die "caddy validate failed on the rendered Caddyfile"
+    || die "caddy validate failed on stack/demo/Caddyfile"
   echo "  Caddyfile: valid (via docker)"
 else
   warn "neither caddy nor docker available -- skipping Caddyfile validation"
@@ -168,7 +229,7 @@ caddyfile, waf = (open(p).read() for p in sys.argv[1:3])
 routed = {m.group(1) for m in
           re.finditer(r'^\s*handle_path\s+(/\S+?)/\*\s*\{', caddyfile, re.M)}
 if not routed:
-    sys.exit("error: no `handle_path /prefix/* {` routes found in the rendered Caddyfile")
+    sys.exit("error: no `handle_path /prefix/* {` routes found in stack/demo/Caddyfile")
 
 bad = sorted(p for p in routed if not re.fullmatch(r'/api/[a-z][a-z0-9-]*', p))
 if bad:
@@ -258,7 +319,7 @@ print(f"  rate-limited:      {sorted(limited)} (+ subtrees, lowercased)")
 PY
 
 say "checking the frontend's ARGUS_*_URL env agrees with the routes"
-python3 - "$work/demo--compose.yaml" "$caddyfile" <<'PY'
+python3 - "$repo/stack/demo/compose.yaml" "$caddyfile" <<'PY'
 import re, sys, yaml
 
 compose = yaml.safe_load(open(sys.argv[1]))
@@ -295,7 +356,7 @@ print(f"  frontend ARGUS_*_URL values == routed namespaces ({len(urls)})")
 PY
 
 say "checking every pinned image tag is pullable"
-# Pins live only inside the rendered compose files, so a typo'd or unpublished
+# Pins live only inside the stack compose files, so a typo'd or unpublished
 # tag passes fmt/validate/plan -- and then `docker compose up -d` fails as a
 # unit on the host: nothing starts, Caddy never binds, Cloudflare serves
 # 521/522 (the repo has the near-miss on record: argus-quarry v0.2.2 looked
@@ -303,7 +364,7 @@ say "checking every pinned image tag is pullable"
 # preflight.tf's move. Anonymous pull tokens suffice for public images; a
 # transport failure warns and skips so an offline run still passes, a
 # definitive 404 fails the build.
-images="$(python3 - "$work/demo--compose.yaml" "$work/core--compose.yaml" <<'PY'
+images="$(python3 - "$repo/stack/demo/compose.yaml" "$repo/stack/core/compose.yaml" <<'PY'
 import sys, yaml
 seen = []
 for p in sys.argv[1:]:

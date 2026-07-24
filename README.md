@@ -62,6 +62,8 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 **Why our own compose, not argus-studio's.** [argus-studio](https://github.com/smk762/argus-studio) already ships suite compose orchestration — but it's a single-host *developer* stack: `up --build` from sibling checkouts, profiles, a GPU override, source bind-mounts. This demo is deployment-shaped and different in kind: two hosts with a public/private split, pinned published images (no build context), Caddy terminating real TLS at the origin, and the core stores (postgres/qdrant/minio) bound to the private network — none of which studio's dev compose models. So the demo keeps a small, purpose-built compose per tier and consumes studio only as the published `frontend` image. The suite images it references are tracked in [#2](https://github.com/smk762/argus-halo/issues/2).
 
+**Why the service definitions are fetched, not baked into `user_data`.** `hcloud_server.user_data` is ForceNew, so anything living there can only change by replacing the host — and the things that change most (image pins, Caddy routes, monitoring configs) were exactly what lived there. That inverted the pins' own rationale: the Grafana pin protects a version-bound data volume, and bumping it destroyed that volume ([#18](https://github.com/smk762/argus-halo/issues/18)). Now `user_data` carries only config (`.env`, `deploy.env`) and a tiny fetcher (`argus-update`); the structural files live in [`stack/`](stack/) and are fetched at boot and on demand from the tracked ref (`stack_ref`, default `main`). A pin bump is a merge plus `ssh <host> /opt/argus/argus-update` — volumes, certificates and the host's IP survive. The trade: merging to `main` **is** the deploy channel, and first boot depends on GitHub being reachable. See runbook §4b.
+
 ## Security
 
 Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.1` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
@@ -109,7 +111,11 @@ Config reaches the backend containers by one path on **both** tiers: Terraform
 renders a single `/opt/argus/.env` per host (from HCP workspace variables,
 `random_password` resources, and derived values), cloud-init writes it `0600`,
 and every backend service loads it with Compose `env_file`. No per-service
-inline secrets, one file to reason about per host. The one exception is the
+inline secrets, one file to reason about per host. A second, non-secret file —
+`/opt/argus/deploy.env` — carries deploy knobs (`TAPE_DUMP_URL`, addresses, the
+tracked stack ref); `stack/<tier>/apply.sh` sources both, which also feeds
+compose's `${VAR}` interpolation in `stack/<tier>/compose.yaml`, so mount
+targets reuse the same variables the services read. The one exception is the
 demo's `frontend`, which gets an inline `environment:` block and never reads
 `.env` — see the frontend section below. To add a key: declare the Terraform
 variable, thread it into that tier's `templatefile(...)`, and add the line to
@@ -202,7 +208,7 @@ DAG (Postgres), the vectors (Qdrant), and the blobs (MinIO), in one
    the `R2_*` env is set (and prints a presigned URL); otherwise it stops at the
    local archive and tells you the manual step.
 4. Set `tape_dump_url` to that presigned URL. Core restores on first boot via
-   `restore-tape.sh` (in [core's cloud-init](modules/core/cloud-init.yaml.tftpl)),
+   `restore-tape.sh` (in [stack/core/](stack/core/restore-tape.sh)),
    guarded by `/opt/argus/data/.tape-restored` so a re-run never clobbers live data.
 
 **A presigned URL expires — R2 caps them at 7 days.** Core reads `tape_dump_url`
@@ -214,7 +220,7 @@ artifact, not a secret, and nothing about it needs to be presigned.
 
 Qdrant snapshots only restore into the **same minor version**, so this is checked
 on both sides. `make tape` reads the minor straight out of the qdrant image pin in
-[core's cloud-init](modules/core/cloud-init.yaml.tftpl) and refuses to build
+[stack/core/compose.yaml](stack/core/compose.yaml) and refuses to build
 against a local Qdrant that doesn't match — nothing to keep in sync by hand. It
 also records `qdrant_version` in `MANIFEST`, and `restore-tape.sh` re-checks that
 against the Qdrant it actually booted, *before* it touches Postgres. So a pin

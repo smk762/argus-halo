@@ -3,6 +3,12 @@ locals {
   # without a second apply.
   core_private_ip = "10.0.1.10"
   demo_private_ip = "10.0.1.20"
+
+  # The repo tarball each host's argus-update fetches its stack/<tier>/ from
+  # (#18). Service definitions, pins, routes and restore scripts live there,
+  # not in user_data -- so a pin bump is a merge plus an in-place update.
+  # codeload takes a bare ref: a branch, a tag, or a commit SHA all work.
+  stack_tarball_url = "https://codeload.github.com/${var.stack_repo}/tar.gz/${var.stack_ref}"
 }
 
 resource "hcloud_ssh_key" "admin" {
@@ -56,6 +62,7 @@ module "core" {
   postgres_password = random_password.postgres.result
   minio_secret_key  = random_password.minio.result
   tape_dump_url     = var.tape_dump_url
+  stack_tarball_url = local.stack_tarball_url
 
   # Monitoring: Prometheus/Grafana live here; Prometheus also scrapes the demo
   # tier's node_exporter over the private network.
@@ -89,6 +96,7 @@ module "demo" {
   cortex_s3_bucket   = module.core.cortex_s3_bucket
   minio_access_key   = module.core.minio_access_key
   minio_secret_key   = random_password.minio.result
+  stack_tarball_url  = local.stack_tarball_url
 
   # Same tape core restores, but the demo host reads only its demo/ subtree to
   # seed the quarry/forge/proof/samples mounts (#9). One URL to rotate.

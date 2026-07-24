@@ -21,6 +21,7 @@ resource "hcloud_server" "core" {
     demo_private_ip        = var.demo_private_ip
     grafana_admin_password = var.grafana_admin_password
     grafana_port           = var.grafana_port
+    stack_tarball_url      = var.stack_tarball_url
   })
 
   labels = {

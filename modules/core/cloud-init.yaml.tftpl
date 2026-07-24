@@ -1,4 +1,11 @@
 #cloud-config
+# Bootstrap only (#18): this user_data carries the host's config (.env,
+# deploy.env) and a fetcher. Everything structural -- compose.yaml with its
+# image pins, prometheus.yml, the restore script -- lives in the repo's
+# stack/core/ tree and is fetched at boot by /opt/argus/argus-update, so
+# changing any of it is a merge plus an in-place update, not a host
+# replacement. What remains here changes rarely and legitimately WITH the
+# host: secrets, addresses, and the bootstrap itself.
 package_update: true
 packages:
   - docker.io
@@ -8,9 +15,11 @@ packages:
   # `tar --zstd` in restore-tape.sh shells out to the zstd binary; not in the
   # base image.
   - zstd
+  # envsubst, for stack/core/apply.sh's prometheus.yml render.
+  - gettext-base
 
 write_files:
-  # Single source of truth for this host's runtime config, rendered by
+  # Single source of truth for this host's SECRET runtime config, rendered by
   # Terraform. Every service that needs config reads it via `env_file` -- the
   # same pattern as the demo tier. See README > Environment.
   - path: /opt/argus/.env
@@ -37,264 +46,70 @@ write_files:
       GF_USERS_ALLOW_SIGN_UP=false
       GF_AUTH_ANONYMOUS_ENABLED=false
 
-  - path: /opt/argus/compose.yaml
+  # Non-secret deploy knobs the fetched stack reads (apply.sh sources this
+  # next to .env): addresses for compose interpolation and the prometheus
+  # render, the tape URL, and which stack this host tracks. 0600 anyway --
+  # tape_dump_url is a presigned URL while it lives.
+  - path: /opt/argus/deploy.env
     permissions: "0600"
     content: |
-      # Every published port binds to ${private_ip} -- the private interface.
-      # Nothing here is reachable from the internet even if the firewall is wrong.
-      services:
-        postgres:
-          image: postgres:16
-          restart: unless-stopped
-          ports: ["${private_ip}:5432:5432"]
-          env_file: /opt/argus/.env
-          volumes: ["/opt/argus/data/postgres:/var/lib/postgresql/data"]
-          healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U argus"]
-            interval: 10s
-            retries: 5
+      STACK_TARBALL_URL=${stack_tarball_url}
+      STACK_TIER=core
+      PRIVATE_IP=${private_ip}
+      DEMO_PRIVATE_IP=${demo_private_ip}
+      GRAFANA_PORT=${grafana_port}
+      S3_BUCKET=${s3_bucket}
+      # Single-quoted: a presigned URL carries `&`, which would otherwise
+      # split this line into background commands when the scripts source
+      # this file (bash, unlike compose's env_file parser, executes it).
+      TAPE_DUMP_URL='${tape_dump_url}'
 
-        qdrant:
-          # Pinned: a Qdrant snapshot only restores to the SAME minor version, so
-          # this must match the qdrant the tape was built against (build-tape.sh).
-          image: qdrant/qdrant:v1.18.3
-          restart: unless-stopped
-          ports: ["${private_ip}:6333:6333"]
-          volumes: ["/opt/argus/data/qdrant:/qdrant/storage"]
-
-        minio:
-          # Pinned so first-boot restore behaves like the build/test environment.
-          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-          restart: unless-stopped
-          command: server /data --console-address ":9001"
-          ports: ["${private_ip}:9000:9000"]
-          env_file: /opt/argus/.env
-          volumes: ["/opt/argus/data/minio:/data"]
-
-        # --- monitoring ---------------------------------------------------
-        # Prometheus + Grafana live on core. Prometheus scrapes both tiers'
-        # node_exporter over the private network and the data services here by
-        # compose DNS. Only Grafana is reachable from the admin IP; everything
-        # else is private (tunnel to reach the Prometheus UI).
-        # All four are pinned for the same reason postgres/qdrant/minio are: a
-        # container recreate (reboot, `compose up -d`, host rebuild) must not
-        # silently roll the monitoring stack forward underneath us. Grafana in
-        # particular stores dashboards in a volume whose schema is version-bound.
-        node-exporter:
-          image: prom/node-exporter:v1.12.1
-          restart: unless-stopped
-          network_mode: host
-          pid: host
-          command:
-            - "--path.rootfs=/host"
-            - "--web.listen-address=:9100"
-          volumes: ["/:/host:ro,rslave"]
-
-        postgres-exporter:
-          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
-          restart: unless-stopped
-          env_file: /opt/argus/.env
-          depends_on: [postgres]
-
-        prometheus:
-          image: prom/prometheus:v3.13.1
-          restart: unless-stopped
-          # Private only -- reach the UI with `ssh -L 9090:${private_ip}:9090`.
-          ports: ["${private_ip}:9090:9090"]
-          volumes:
-            - /opt/argus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-            - prometheus_data:/prometheus
-
-        grafana:
-          image: grafana/grafana:13.1.1
-          restart: unless-stopped
-          # Host port is a compose-level value, so it stays templated by
-          # Terraform; the in-container port comes from GF_SERVER_HTTP_PORT in .env.
-          ports: ["${grafana_port}:${grafana_port}"]
-          env_file: /opt/argus/.env
-          volumes:
-            - grafana_data:/var/lib/grafana
-            - /opt/argus/grafana/provisioning:/etc/grafana/provisioning:ro
-          depends_on: [prometheus]
-
-      volumes:
-        prometheus_data:
-        grafana_data:
-
-  - path: /opt/argus/prometheus.yml
-    permissions: "0644"
-    content: |
-      global:
-        scrape_interval: 30s
-      scrape_configs:
-        - job_name: prometheus
-          static_configs:
-            - targets: ["localhost:9090"]
-        - job_name: node
-          static_configs:
-            - targets: ["${private_ip}:9100"]
-              labels: { tier: core }
-            - targets: ["${demo_private_ip}:9100"]
-              labels: { tier: demo }
-        - job_name: postgres
-          static_configs:
-            - targets: ["postgres-exporter:9187"]
-        - job_name: qdrant
-          metrics_path: /metrics
-          static_configs:
-            - targets: ["qdrant:6333"]
-        - job_name: minio
-          metrics_path: /minio/v2/metrics/cluster
-          static_configs:
-            - targets: ["minio:9000"]
-
-  - path: /opt/argus/grafana/provisioning/datasources/prometheus.yml
-    permissions: "0644"
-    content: |
-      apiVersion: 1
-      datasources:
-        - name: Prometheus
-          type: prometheus
-          access: proxy
-          url: http://prometheus:9090
-          isDefault: true
-
-  - path: /opt/argus/restore-tape.sh
-    permissions: "0700"
+  # The fetch-and-apply step: pulls the repo tarball at the tracked ref,
+  # swaps the tier's stack/ subtree into place, and runs its apply.sh.
+  # Deliberately tiny and generic -- ALL tier logic lives in the fetched
+  # apply.sh, so this file (which IS ForceNew) should almost never change.
+  # Run it over SSH any time to converge the host on the current ref:
+  #   ssh <host> /opt/argus/argus-update
+  - path: /opt/argus/argus-update
+    permissions: "0755"
     content: |
       #!/usr/bin/env bash
-      # Seeds all three stores from the recorded pipeline run. Idempotent: the
-      # marker means a re-run of cloud-init won't clobber live data. Consumes the
-      # archive built by `make tape` (scripts/build-tape.sh) -- same layout:
-      #   lineage.sql, qdrant/<collection>.snapshot, blobs/...
       set -euo pipefail
-      MARKER=/opt/argus/data/.tape-restored
+      # shellcheck source=/dev/null
+      . /opt/argus/deploy.env
 
-      # tape_dump_url is baked in by templatefile at PLAN time, so a hand re-run
-      # would otherwise always replay the URL this host was born with -- useless
-      # when the reason you are re-running is that the URL expired. TAPE_DUMP_URL
-      # overrides it, so recovery works without rebuilding the host:
-      #   TAPE_DUMP_URL='<fresh url>' /opt/argus/restore-tape.sh
-      TAPE_URL="$${TAPE_DUMP_URL:-${tape_dump_url}}"
+      # One converge at a time: a boot-time run and an operator's SSH run
+      # share the stack.new/stack.old scratch names and must not interleave.
+      exec 9>/opt/argus/.argus-update.lock
+      flock 9
 
-      [ -f "$MARKER" ] && { echo "tape already restored"; exit 0; }
-      [ -z "$TAPE_URL" ] && { echo "no tape_dump_url set, starting clean"; exit 0; }
-
-      # Bounded readiness wait: probe every 2s but give up after ~5min, so a store
-      # that never comes up fails the restore instead of hanging cloud-init forever.
-      wait_for() {  # wait_for <name> <probe cmd...>
-        local name="$1"; shift
-        local i=0
-        until "$@" >/dev/null 2>&1; do
-          i=$((i + 1))
-          [ "$i" -ge 150 ] && { echo "timed out waiting for $name to become ready" >&2; exit 1; }
-          sleep 2
-        done
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "$tmp"' EXIT
+      echo "fetching stack ($STACK_TIER) from $STACK_TARBALL_URL"
+      # To a file, not a pipe: curl can only rewind (and so genuinely --retry
+      # after a mid-transfer drop) a seekable output, and --remove-on-error
+      # keeps a truncated fetch from looking like a finished download.
+      curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+        --remove-on-error -o "$tmp/stack.tgz" "$STACK_TARBALL_URL"
+      tar -xzf "$tmp/stack.tgz" -C "$tmp"
+      src="$(find "$tmp" -mindepth 3 -maxdepth 3 -type d -path "*/stack/$STACK_TIER" | head -1)"
+      [ -n "$src" ] && [ -f "$src/apply.sh" ] || {
+        echo "no stack/$STACK_TIER/apply.sh in the fetched tarball -- refusing to apply" >&2
+        exit 1
       }
-
-      cd /opt/argus
-      # Separate the failure modes instead of blaming expiry for all of them: a
-      # dropped transfer, a DNS failure and a 403 on a stale presign are different
-      # problems with different fixes, and the old message asserted expiry for
-      # every one. --retry rides out the transient ones; --remove-on-error keeps a
-      # truncated archive from sitting there looking like a finished download.
-      # See docs/runbook.md > Seed the tape.
-      rm -f tape.tar.zst
-      curl_rc=0
-      http_code="$(curl -sSL --retry 3 --retry-all-errors --retry-delay 5 \
-        --remove-on-error -o tape.tar.zst -w '%%{http_code}' "$TAPE_URL")" || curl_rc=$?
-      if [ "$curl_rc" -ne 0 ]; then
-        rm -f tape.tar.zst
-        echo "could not fetch the tape: curl exited $curl_rc." >&2
-        echo "That is a transport failure -- DNS, TLS, or the connection dropped." >&2
-        echo "It is NOT a URL problem; retry before rebuilding the tape." >&2
-        exit 1
-      fi
-      case "$http_code" in
-        2??) ;;
-        401|403)
-          rm -f tape.tar.zst
-          echo "the tape URL was rejected (HTTP $http_code)." >&2
-          echo "If it is an R2 presigned URL it has almost certainly EXPIRED -- R2" >&2
-          echo "caps them at 7 days. Rebuild with 'make tape', then re-run here and" >&2
-          echo "PASS the fresh URL -- the one in this file was baked in at plan time" >&2
-          echo "and expired with it, so a bare re-run just repeats this:" >&2
-          echo "  TAPE_DUMP_URL='<new url>' /opt/argus/restore-tape.sh" >&2
-          echo "Also set it as the tape_dump_url workspace variable, or the NEXT" >&2
-          echo "rebuild of this host repeats this failure." >&2
-          exit 1 ;;
-        *)
-          rm -f tape.tar.zst
-          echo "the tape fetch returned HTTP $http_code -- not an expiry." >&2
-          echo "Check the bucket and object that tape_dump_url points at." >&2
-          exit 1 ;;
-      esac
-      rm -rf /opt/argus/tape && mkdir -p /opt/argus/tape
-      tar --zstd -xf tape.tar.zst -C /opt/argus/tape
-
-      # --- precondition: the tape's Qdrant minor must match this host's ---
-      # build-tape.sh records the source version in MANIFEST because a snapshot
-      # only restores into a matching minor. Check it HERE, where both numbers are
-      # actually known, rather than trusting the builder's copy of the pin: this
-      # catches a pin moved on one side only, and it fails BEFORE psql touches
-      # Postgres, so a rejected tape leaves the stores untouched instead of
-      # half-seeded. An older tape with no qdrant_version line skips the check.
-      wait_for qdrant curl -fsS "http://${private_ip}:6333/readyz"
-      tape_qdrant="$(sed -n 's/^qdrant_version=//p' /opt/argus/tape/MANIFEST 2>/dev/null || true)"
-      live_qdrant="$(curl -fsS "http://${private_ip}:6333/" \
-        | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')" || true
-      if [ -n "$tape_qdrant" ] && [ -n "$live_qdrant" ] \
-         && [ "$(printf '%s' "$tape_qdrant" | cut -d. -f1,2)" \
-           != "$(printf '%s' "$live_qdrant" | cut -d. -f1,2)" ]; then
-        echo "tape was built against Qdrant $tape_qdrant but this host runs $live_qdrant." >&2
-        echo "Snapshots do not cross minor versions -- refusing to restore rather" >&2
-        echo "than half-seeding the stores. Rebuild the tape against $live_qdrant, or" >&2
-        echo "move the qdrant pin here and in scripts/build-tape.sh together." >&2
-        exit 1
-      fi
-
-      # --- lineage (Postgres) ---
-      wait_for postgres pg_isready -h ${private_ip} -U argus -q
-      # ON_ERROR_STOP: a failed/partial load must abort (set -e) BEFORE the marker
-      # is written, so a broken restore is retried, not recorded as success.
-      psql "postgresql://argus:${postgres_password}@${private_ip}:5432/argus" \
-        -v ON_ERROR_STOP=1 -f /opt/argus/tape/lineage.sql
-
-      # --- vectors (Qdrant) ---
-      # Each snapshot's filename is its collection name; upload recreates the
-      # collection from it (priority=snapshot => snapshot data wins). Qdrant was
-      # already waited on above, for the version precondition.
-      for snap in /opt/argus/tape/qdrant/*.snapshot; do
-        [ -e "$snap" ] || break
-        col="$(basename "$snap" .snapshot)"
-        echo "restoring qdrant collection $col"
-        curl -fsS -X POST \
-          "http://${private_ip}:6333/collections/$col/snapshots/upload?priority=snapshot" \
-          -H "Content-Type:multipart/form-data" -F "snapshot=@$snap"
-      done
-
-      # --- blobs (MinIO) ---
-      # Always ensure the bucket exists (even for a blob-less tape, so the first
-      # cortex write doesn't hit NoSuchBucket), then mirror the archived objects
-      # into it via the mc image (no host client to install); --network host
-      # reaches the private-IP endpoint. An empty blobs/ makes the mirror a no-op.
-      wait_for minio curl -fsS "http://${private_ip}:9000/minio/health/ready"
-      echo "restoring minio blobs into ${s3_bucket}"
-      docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
-        --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -ec '
-          mc alias set core "http://${private_ip}:9000" "${minio_access_key}" "${minio_secret_key}" >/dev/null
-          mc mb --ignore-existing "core/${s3_bucket}" >/dev/null
-          mc mirror --overwrite /blobs "core/${s3_bucket}"
-        '
-
-      touch "$MARKER"
-      # Reclaim the extraction scratch (a full second copy of the blobs) now that
-      # the stores hold the data; the marker records completion.
-      rm -f tape.tar.zst
-      rm -rf /opt/argus/tape
+      # Swap atomically-ish: never leave /opt/argus/stack half-written, and
+      # keep the previous tree one `mv` away.
+      rm -rf /opt/argus/stack.new
+      cp -a "$src" /opt/argus/stack.new
+      chmod +x /opt/argus/stack.new/*.sh
+      rm -rf /opt/argus/stack.old
+      [ -d /opt/argus/stack ] && mv /opt/argus/stack /opt/argus/stack.old
+      mv /opt/argus/stack.new /opt/argus/stack
+      # A plain call, not exec: exec would replace the shell and discard the
+      # EXIT trap above, leaking $tmp on every successful run. set -e still
+      # propagates apply.sh's exit status.
+      /opt/argus/stack/apply.sh
 
 runcmd:
-  - [mkdir, -p, /opt/argus/data/postgres, /opt/argus/data/qdrant, /opt/argus/data/minio, /opt/argus/tape]
   - [systemctl, enable, --now, docker]
-  - [docker, compose, -f, /opt/argus/compose.yaml, up, -d]
-  - [/opt/argus/restore-tape.sh]
+  - [/opt/argus/argus-update]
