@@ -11,6 +11,16 @@ Guidance for AI agents working in this repo. Human-facing usage lives in [README
 
 It consumes argus-studio only as the published `frontend` image; studio's root `compose.yaml` is a dev stack and is deliberately *not* reused (README > Decisions).
 
+## Argus suite
+<!-- argus-suite: keep this block; argus-ci checks for it -->
+This repo is part of the Argus suite. The suite map below lists every sibling and what it owns; check it before
+building something a sibling may already do. **On every release, update this repo's row and capabilities in
+argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
+
+@../argus-core/SUITE.md
+
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
+
 ## Layout
 
 - Root `*.tf` — `main.tf` (network, firewalls, the two modules), `dns.tf` (records, zone SSL mode, the R2 bucket with `prevent_destroy`), `waf.tf` (the single free-plan rate-limit rule), `preflight.tf` (checks `server_type` against live Hetzner stock at plan time), `variables.tf` / `outputs.tf` / `versions.tf` / `providers.tf`.
