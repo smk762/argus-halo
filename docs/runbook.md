@@ -246,10 +246,11 @@ What still replaces a host (it lives in `user_data` on purpose): secrets and
 `stack_ref` itself), and the `argus-update` bootstrap. Those change rarely and
 legitimately with the host; refresh the tape URL first (§5) when they do.
 
-Note the trust consequence: **merging to `main` is the deploy channel.** A
+Note the trust consequence: **advancing `main` is the deploy channel.** A
 rebuilt host converges on current `main`, and an `argus-update` run applies
-whatever is merged. Pin `stack_ref` to a tag or SHA if you want plan-time
-control back, accepting that moving the pin then replaces the hosts again.
+whatever `main` points at (see README → Branches). Pin `stack_ref` to a tag
+or SHA if you want plan-time control back, accepting that moving the pin
+then replaces the hosts again.
 
 ---
 
