@@ -245,6 +245,10 @@ Restore is idempotent and safe to re-run by hand — see the runbook.
 - **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
 - CI runs `fmt -check` + `validate` on every push and PR. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
 
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
