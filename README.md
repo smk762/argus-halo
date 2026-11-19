@@ -62,7 +62,7 @@ secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
 
 **Why our own compose, not argus-studio's.** [argus-studio](https://github.com/smk762/argus-studio) already ships suite compose orchestration — but it's a single-host *developer* stack: `up --build` from sibling checkouts, profiles, a GPU override, source bind-mounts. This demo is deployment-shaped and different in kind: two hosts with a public/private split, pinned published images (no build context), Caddy terminating real TLS at the origin, and the core stores (postgres/qdrant/minio) bound to the private network — none of which studio's dev compose models. So the demo keeps a small, purpose-built compose per tier and consumes studio only as the published `frontend` image. The suite images it references are tracked in [#2](https://github.com/smk762/argus-halo/issues/2).
 
-**Why the service definitions are fetched, not baked into `user_data`.** `hcloud_server.user_data` is ForceNew, so anything living there can only change by replacing the host — and the things that change most (image pins, Caddy routes, monitoring configs) were exactly what lived there. That inverted the pins' own rationale: the Grafana pin protects a version-bound data volume, and bumping it destroyed that volume ([#18](https://github.com/smk762/argus-halo/issues/18)). Now `user_data` carries only config (`.env`, `deploy.env`) and a tiny fetcher (`argus-update`); the structural files live in [`stack/`](stack/) and are fetched at boot and on demand from the tracked ref (`stack_ref`, default `main`). A pin bump is a merge plus `ssh <host> /opt/argus/argus-update` — volumes, certificates and the host's IP survive. The trade: merging to `main` **is** the deploy channel, and first boot depends on GitHub being reachable. See runbook §4b.
+**Why the service definitions are fetched, not baked into `user_data`.** `hcloud_server.user_data` is ForceNew, so anything living there can only change by replacing the host — and the things that change most (image pins, Caddy routes, monitoring configs) were exactly what lived there. That inverted the pins' own rationale: the Grafana pin protects a version-bound data volume, and bumping it destroyed that volume ([#18](https://github.com/smk762/argus-halo/issues/18)). Now `user_data` carries only config (`.env`, `deploy.env`) and a tiny fetcher (`argus-update`); the structural files live in [`stack/`](stack/) and are fetched at boot and on demand from the tracked ref (`stack_ref`, default `main`). A pin bump is a merge to `dev`, a fast-forward of `main` (see [Branches](#branches)), plus `ssh <host> /opt/argus/argus-update` — volumes, certificates and the host's IP survive. The trade: advancing `main` **is** the deploy channel, and first boot depends on GitHub being reachable. See runbook §4b.
 
 ## Security
 
@@ -243,7 +243,11 @@ Restore is idempotent and safe to re-run by hand — see the runbook.
 ## Known gaps
 
 - **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
-- CI runs `fmt -check` + `validate` on every push and PR. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
+- CI runs `fmt -check` + `validate` on every PR and on pushes to `dev` and `main`. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`); this repo has no version tags, so there is nothing to tag afterwards. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
 
 ## License
 

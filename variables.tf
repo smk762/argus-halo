@@ -167,8 +167,8 @@ variable "stack_repo" {
 variable "stack_ref" {
   description = <<-EOT
     Git ref of stack_repo the hosts track: a branch, tag, or commit SHA.
-    `main` means a host converges on the current default branch every time
-    argus-update runs (boot included) -- merging to main IS the deploy
+    `main` means a host converges on the released branch every time
+    argus-update runs (boot included) -- advancing main IS the deploy
     channel. Pin a SHA or tag here only if you want plan-time control back,
     accepting that changing it then replaces the hosts again (it lives in
     deploy.env, which is user_data).
