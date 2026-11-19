@@ -229,8 +229,11 @@ a ref (`stack_ref`, default `main`) and fetches its subtree via
 So a Grafana security patch, a service pin bump, or a new Caddy route is:
 
 ```bash
-# 1. edit stack/<tier>/..., open a PR, let check-cloud-init.sh gate it, merge
-# 2. converge the affected host(s) — no terraform, no host replacement:
+# 1. edit stack/<tier>/..., open a PR against dev, let check-cloud-init.sh gate it, merge
+# 2. release: fast-forward main to that dev commit once its CI is green --
+#    the hosts fetch main, so until this step argus-update is a no-op:
+git fetch origin && git push origin origin/dev:main
+# 3. converge the affected host(s) — no terraform, no host replacement:
 ssh root@$(terraform output -raw core_ipv4) /opt/argus/argus-update
 ssh root@$(terraform output -raw demo_ipv4) /opt/argus/argus-update
 ```

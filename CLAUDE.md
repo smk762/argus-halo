@@ -19,7 +19,7 @@ argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
 
 @../argus-core/SUITE.md
 
-Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/dev/SUITE.md
 
 ## Layout
 
@@ -42,7 +42,7 @@ terraform plan         # remote, in HCP (needs `terraform login`)
 
 ## Conventions & gotchas
 
-- **Merging to `main` is the deploy channel.** Hosts track `stack_ref` (default `main`); `ssh root@<host> /opt/argus/argus-update` converges a host on whatever is merged. A pin bump or Caddy route edit is a PR to `stack/`, not a Terraform change (runbook §4b).
+- **Advancing `main` is the deploy channel.** Hosts track `stack_ref` (default `main`); `ssh root@<host> /opt/argus/argus-update` converges a host on whatever `main` points at. A pin bump or Caddy route edit is a PR to `stack/` against `dev`, not a Terraform change, and reaches the hosts only once `main` is fast-forwarded to that `dev` commit (README > Branches, runbook §4b). Never open a PR against `main`.
 - **Don't put changeable things in `user_data`.** `hcloud_server.user_data` is ForceNew: editing the cloud-init templates (secrets, `.env`/`deploy.env` values, `stack_ref`, the bootstrap) **replaces the host**, losing `caddy_data`/the origin cert or core's volumes (#18). Structural files belong in `stack/`.
 - **Three lists must agree** and only `check-cloud-init.sh` enforces it: the Caddy `/api/<service>/*` namespaces, `waf.tf`'s rate-limit expression, and the frontend's `ARGUS_*_URL` values in `stack/demo/compose.yaml`. Adding a service touches all three, plus `ARGUS_*` for the frontend goes in its inline `environment:` block — **never** `.env`, which holds the caption key and store credentials.
 - **Every `${VAR}` a stack compose file interpolates must be defined** by the rendered `.env` + `deploy.env`; an undefined one becomes an empty string on the host silently. New keys: Terraform variable → the tier's `templatefile(...)` → the template's `.env` block.
@@ -53,4 +53,4 @@ terraform plan         # remote, in HCP (needs `terraform login`)
 
 ## CI / release
 
-`.github/workflows/terraform.yml`: `fmt -check`, `init -backend=false`, `validate`, and `check-cloud-init.sh` on every push/PR; remote `plan` on PRs once a `TF_API_TOKEN` secret is set (skipped otherwise). No releases — `main` is what the hosts run.
+`.github/workflows/terraform.yml`: `fmt -check`, `init -backend=false`, `validate`, and `check-cloud-init.sh` on every PR and on pushes to `dev`/`main`; remote `plan` on PRs once a `TF_API_TOKEN` secret is set (skipped otherwise). `.github/workflows/suite.yml`: the argus-ci suite-map check (the block above plus this repo's row in SUITE.md). No version tags — a release is `main` fast-forwarded to a `dev` commit that passed CI, and `main` is what the hosts run.
