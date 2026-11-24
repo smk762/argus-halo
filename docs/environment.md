@@ -42,7 +42,7 @@ a fixed setting belongs on the service instead. Where each value comes from:
 
 | Key | Consumer | Source | Default | Sensitive |
 |---|---|---|---|---|
-| `ARGUS_CURATOR_SCAN_ROOT` | curator | `curator_scan_root` | `/srv/argus/samples` | no |
+| `ARGUS_CURATOR_SCAN_ROOT` | curator | `curator_scan_root` | the `samples` seed directory | no |
 | `ARGUS_CURATOR_EXPORT_ROOT` | curator | `curator_export_root` | `""` → `/export` refused | no |
 | `ARGUS_LENS_URL` | curator | code | `http://lens:8100` | no |
 | `ARGUS_BACKEND` | lens | code | `openai-compat` | no |

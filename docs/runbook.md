@@ -190,7 +190,7 @@ for p in 5432 6333 9000; do nc -vz -w3 "$DEMO" "$p" 2>&1; done   # all should fa
 
 ```bash
 ssh root@$(terraform output -raw demo_ipv4) \
-  'for p in 5432 6333 9000; do nc -vz -w3 10.0.1.10 $p; done'    # all should connect
+  "for p in 5432 6333 9000; do nc -vz -w3 $(terraform output -raw core_private_ip) \$p; done"    # all should connect
 ```
 
 **SSH is locked to your IP** — from any other address, port 22 should time out.
@@ -203,7 +203,7 @@ terraform output -raw grafana_password                              # login: adm
 
 # Prometheus stays private — tunnel, then check every target is "up":
 CORE=$(terraform output -raw core_ipv4)
-ssh -fN -L 9090:10.0.1.10:9090 root@"$CORE"
+ssh -fN -L "9090:$(terraform output -raw core_private_ip):9090" root@"$CORE"
 curl -fsS localhost:9090/api/v1/targets | grep -o '"health":"[a-z]*"' | sort | uniq -c
 ```
 
@@ -284,16 +284,16 @@ ssh root@$(terraform output -raw core_ipv4) \
 
 The **demo host** has its own counterpart, `restore-seed.sh`: it reads the same
 tape's `demo/` subtree, drops each tier onto its bind-mount source
-(`/srv/argus/samples`, `quarry`, `exports`, `proof`, `atlas`, `dem`), and
+(`samples`, `quarry`, `exports`, `proof`, `atlas` and `dem` under the host's seed root), and
 makes the trees world-readable (`a+rX` — quarry 0.2.3+ reads its `:ro` pool
 as a non-root user, uid 10001 on that release). `atlas` and `dem` are
 optional; without them `/atlas` lists no jobs. It runs before `compose up` on first
-boot and no-ops once `/srv/argus/.seed-restored` exists; to refresh the demo
-tiers in place, delete that marker and re-run with a fresh URL:
+boot and no-ops once the seed is restored; to refresh the demo
+tiers in place, re-run it with `SEED_FORCE=1` and a fresh URL:
 
 ```bash
 ssh root@$(terraform output -raw demo_ipv4) \
-  "rm -f /srv/argus/.seed-restored && TAPE_DUMP_URL='<the presigned url>' /opt/argus/stack/restore-seed.sh"
+  "SEED_FORCE=1 TAPE_DUMP_URL='<the presigned url>' /opt/argus/stack/restore-seed.sh"
 ```
 
 Re-seed through the script rather than untarring by hand: a hand-copied pool
@@ -405,7 +405,7 @@ workspace variable.
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |
-| Can reach a store port publicly | firewall/binding regression | check compose binds `10.0.1.x:PORT`, not `0.0.0.0` |
+| Can reach a store port publicly | firewall/binding regression | check compose binds `${PRIVATE_IP}:PORT`, not `0.0.0.0` |
 | Restore didn't run | marker present or no URL | remove `.tape-restored`, set `tape_dump_url` |
 | Core rebuilt with empty stores | presigned `tape_dump_url` expired (R2 max 7d) | `make tape`, then `TAPE_DUMP_URL='<new url>' /opt/argus/stack/restore-tape.sh` on core — and set the workspace variable too, or the next rebuild repeats it. See §5 |
 | Restore says "transport failure", not expiry | network/DNS/TLS, not the URL | retry; the script already retries 3× before giving up |

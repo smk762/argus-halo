@@ -26,7 +26,8 @@ MARKER=/srv/argus/.seed-restored
 #   TAPE_DUMP_URL='<fresh url>' /opt/argus/stack/restore-seed.sh
 TAPE_URL="${CLI_TAPE_URL:-${TAPE_DUMP_URL:-}}"
 
-[ -f "$MARKER" ] && { echo "demo seed already restored"; exit 0; }
+# SEED_FORCE=1 re-seeds in place over an existing seed.
+[ -f "$MARKER" ] && [ "${SEED_FORCE:-}" != 1 ] && { echo "demo seed already restored"; exit 0; }
 # "Empty" is degraded, not broken -- except quarry: its pool is mounted
 # :ro, so unlike the pre-0.2.3 rw mount it cannot create a store on first
 # request, and /ready plus every data GET answer 503 until a pool is

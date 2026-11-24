@@ -22,7 +22,7 @@ flowchart TB
     prom[Prometheus, Grafana]
   end
 
-  demo ---|"private network 10.0.1.0/24"| core
+  demo ---|private network| core
   r2[(R2: the recorded run)] -.->|restored on first boot| core
   r2 -.->|seed data| demo
   admin([Admin IP]) -.->|SSH, Grafana| core
