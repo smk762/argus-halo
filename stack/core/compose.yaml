@@ -79,7 +79,7 @@ services:
     volumes: ["/:/host:ro,rslave"]
 
   postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.21.1
     restart: unless-stopped
     environment:
       - DATA_SOURCE_NAME=${DATA_SOURCE_NAME}
