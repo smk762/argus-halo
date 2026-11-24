@@ -332,8 +332,8 @@ routed = {m.group(1) for m in
 # the public origin -- so each one must be a namespace Caddy actually routes, or
 # every API call it issues falls through to the frontend's own catch-all and
 # gets HTML back, with nothing in this repo ever flagging it. Only the frontend
-# service is checked: .env's ARGUS_LENS_URL is curator's server-side handoff
-# (compose DNS, http://lens:8100), a different value on purpose.
+# service is checked: .env's ARGUS_LENS_URL is a server-side address (compose
+# DNS, http://lens:8100), a different value on purpose.
 env = compose["services"]["frontend"].get("environment") or []
 urls = {}
 for entry in env:
@@ -341,7 +341,7 @@ for entry in env:
     if re.fullmatch(r"ARGUS_[A-Z0-9]+_URL", key):
         urls[key] = value
 if not urls:
-    sys.exit("error: the frontend service sets no ARGUS_*_URL -- studio 0.1.0+ resolves "
+    sys.exit("error: the frontend service sets no ARGUS_*_URL -- studio resolves "
              "its API bases from the environment per request (argus-studio#56)")
 stale = {k: v for k, v in urls.items() if v not in routed}
 if stale:
@@ -353,6 +353,92 @@ if missing:
     sys.exit(f"error: routed namespaces with no frontend ARGUS_*_URL: {sorted(missing)} -- "
              f"the frontend cannot reach a namespace it is not told about")
 print(f"  frontend ARGUS_*_URL values == routed namespaces ({len(urls)})")
+PY
+
+say "checking pins are exact and the demo posture is declared"
+python3 - "$repo" "$caddyfile" <<'PY'
+import re, sys, yaml
+
+repo, caddyfile = sys.argv[1], open(sys.argv[2]).read()
+
+def env_of(svc):
+    out = {}
+    for entry in svc.get("environment") or []:
+        key, _, value = str(entry).partition("=")
+        out[key] = value
+    return out
+
+tiers = {t: yaml.safe_load(open(f"{repo}/stack/{t}/compose.yaml"))["services"]
+         for t in ("core", "demo")}
+
+# Exact pins: no missing tag, no `latest`, no bare major. A container recreate
+# must not silently change what runs.
+floating = [svc["image"] for services in tiers.values() for svc in services.values()
+            if "@sha256:" not in svc["image"]
+            and not re.search(r":(v?\d+\.\d+|RELEASE\.)[^/]*$", svc["image"])]
+if floating:
+    sys.exit(f"error: floating image tags {floating}; pin an exact version or digest")
+
+# GPU variants never belong on this host: -train arms live LoRA training (#33),
+# -score and -gpu carry torch (#10).
+gpu = [s["image"] for s in tiers["demo"].values() if re.search(r"-(train|score|gpu)$", s["image"])]
+if gpu:
+    sys.exit(f"error: GPU image variants on the public demo: {gpu}")
+
+# The read-only switches are load-bearing (several are not image defaults), so
+# deleting or flipping one is a build failure rather than a review catch.
+required = {
+    "lens": {"LENS_READ_ONLY": "1", "LENS_URL_FETCH": "off", "ARGUS_REFINE": "off"},
+    "curator": {"CURATOR_ALLOW_MOVE": "0", "CURATOR_ALLOW_DELETE": "0"},
+    "quarry": {"QUARRY_ALLOW_FETCH": "0"},
+    "forge": {"ARGUS_FORGE_READONLY": "1"},
+    "proof": {"ARGUS_PROOF_READ_ONLY": "1"},
+    "atlas": {"ATLAS_ALLOW_BAKE": "", "ATLAS_ALLOW_OSM": ""},
+}
+for name, want in required.items():
+    got = env_of(tiers["demo"][name])
+    bad = {k: got.get(k) for k, v in want.items() if got.get(k) != v}
+    if bad:
+        sys.exit(f"error: {name} must declare {want}; found {bad}")
+
+# A whole-.env mount hands every secret to every container (#15).
+for tier, services in tiers.items():
+    leaky = sorted(n for n, svc in services.items() if "env_file" in svc)
+    if leaky:
+        sys.exit(f"error: stack/{tier} services {leaky} use env_file; list the keys each one needs")
+holders = sorted(n for n, svc in tiers["demo"].items()
+                 if "ARGUS_OPENAI_COMPAT_API_KEY" in env_of(svc))
+if holders != ["lens"]:
+    sys.exit(f"error: only lens may hold the caption key; held by {holders}")
+
+for name, svc in tiers["demo"].items():
+    rw = [v for v in svc.get("volumes") or [] if v.startswith("/srv/") and not v.endswith(":ro")]
+    if rw:
+        sys.exit(f"error: demo data must be mounted read-only; {name} has {rw}")
+
+# Every service's published port set: only Caddy faces out.
+out = sorted(n for n, svc in tiers["demo"].items() if svc.get("ports"))
+if out != ["caddy"]:
+    sys.exit(f"error: only caddy may publish ports on the demo tier; found {out}")
+
+# The edge refusals exist, refuse, and come before any route (source order wins).
+first_route = re.search(r"^\s*handle_path\s", caddyfile, re.M).start()
+for name in ("offlimits", "delete"):
+    block = re.search(rf"handle\s+@{name}\s*\{{(.*?)\n\s*\}}", caddyfile, re.S)
+    if not block or "reverse_proxy" in block.group(1) or not re.search(r"\s403\b", block.group(1)):
+        sys.exit(f"error: `handle @{name}` must respond 403 and proxy nothing")
+    if block.start() > first_route:
+        sys.exit(f"error: `handle @{name}` must come before the handle_path routes")
+m = re.search(r"^\s*@offlimits path ([^\n]+)", caddyfile, re.M)
+need = {"/api/lens/v1/*", "/api/lens/immich/*", "/api/curator/scans/purge",
+        "/api/curator/scan/*/delete", "/api/atlas/purge", "/api/atlas/purge/*",
+        "/api/atlas/controls", "/api/atlas/tiles"}
+gone = need - set(m.group(1).split() if m else [])
+if gone:
+    sys.exit(f"error: @offlimits no longer refuses {sorted(gone)}")
+if not re.search(r"@delete\s*\{\s*method DELETE\s+path /api/\*\s*\}", caddyfile):
+    sys.exit("error: @delete must match every DELETE under /api/*")
+print("  pins exact; read-only switches, secrets, mounts, ports and edge refusals as declared")
 PY
 
 say "checking every pinned image tag is pullable"
@@ -378,8 +464,15 @@ PY
 )"
 while IFS= read -r image; do
   [ -n "$image" ] || continue
-  ref="$image"; case "$ref" in *:*) ;; *) ref="$ref:latest";; esac
-  name="${ref%:*}" tag="${ref##*:}"
+  # A digest pin (`name@sha256:hex`) works too: the manifest URL takes the
+  # digest as the tag.
+  if [[ "$image" == *@sha256:* ]]; then
+    name="${image%@sha256:*}"
+    tag="sha256:${image##*@sha256:}"
+  else
+    ref="$image"; case "$ref" in *:*) ;; *) ref="$ref:latest";; esac
+    name="${ref%:*}" tag="${ref##*:}"
+  fi
   case "$name" in
     ghcr.io/*) registry="ghcr.io"; path="${name#ghcr.io/}"
                token_url="https://ghcr.io/token?scope=repository:$path:pull" ;;

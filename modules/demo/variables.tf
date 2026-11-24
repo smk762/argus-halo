@@ -1,45 +1,95 @@
-variable "project" { type = string }
-variable "location" { type = string }
-variable "server_type" { type = string }
-variable "image" { type = string }
-variable "network_id" { type = string }
-variable "admin_ip" { type = string }
-variable "private_ip" { type = string }
-variable "domain" { type = string }
+variable "project" {
+  description = "Name prefix applied to every resource."
+  type        = string
+}
+
+variable "location" {
+  description = "Hetzner location."
+  type        = string
+}
+
+variable "server_type" {
+  description = "Hetzner server type."
+  type        = string
+}
+
+variable "image" {
+  description = "Base OS image."
+  type        = string
+}
+
+variable "network_id" {
+  description = "Private network to attach to."
+  type        = string
+}
+
+variable "admin_ip" {
+  description = "CIDR allowed to reach SSH."
+  type        = string
+}
+
+variable "private_ip" {
+  description = "Fixed address on the private network."
+  type        = string
+}
+
+variable "domain" {
+  description = "Public hostname Caddy serves."
+  type        = string
+}
 
 variable "ssh_key_ids" {
-  type = list(string)
+  description = "Hetzner SSH key ids installed on the host."
+  type        = list(string)
 }
 
 # --- cortex contract, handed down from modules/core --------------------------
 
 variable "cortex_pg_url" {
-  type      = string
-  sensitive = true
+  description = "Lineage store DSN, from the core module."
+  type        = string
+  sensitive   = true
 }
 
-variable "cortex_qdrant_url" { type = string }
-variable "cortex_s3_endpoint" { type = string }
-variable "cortex_s3_bucket" { type = string }
-variable "minio_access_key" { type = string }
+variable "cortex_qdrant_url" {
+  description = "Vector store URL, from the core module."
+  type        = string
+}
+
+variable "cortex_s3_endpoint" {
+  description = "Blob store endpoint, from the core module."
+  type        = string
+}
+
+variable "cortex_s3_bucket" {
+  description = "Blob store bucket, from the core module."
+  type        = string
+}
+
+variable "minio_access_key" {
+  description = "MinIO root user."
+  type        = string
+}
 
 variable "minio_secret_key" {
-  type      = string
-  sensitive = true
+  description = "MinIO root password."
+  type        = string
+  sensitive   = true
 }
 
 # The demo host restores the same tape core does, but reads only its demo/ subtree
 # (quarry/forge/proof/samples seed) via restore-seed.sh. Empty => tiers start
-# empty. See variables.tf (root) for the full contract and README > The tape.
+# empty. See variables.tf (root) for the full contract and docs/tape.md.
 variable "tape_dump_url" {
-  type      = string
-  default   = ""
-  sensitive = true
+  description = "Presigned tape URL; empty starts the host unseeded."
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "curator_scan_root" {
   description = <<-EOT
-    Sandbox directory curator is allowed to scan. See README > Security.
+    Sandbox directory curator is allowed to scan. See docs/security.md.
     This is a containment measure, not authorization -- curator must enforce it
     server-side. A UI mode flag is not a boundary.
   EOT

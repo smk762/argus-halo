@@ -17,7 +17,8 @@ set +a
 # missing bind source as a root-owned directory anyway, but doing it here keeps
 # the seed layout explicit and matches what the tape restores into (#9).
 mkdir -p /srv/argus/samples /srv/argus/quarry /srv/argus/exports \
-  /srv/argus/proof/reports /srv/argus/proof/exports /srv/argus/proof/runs
+  /srv/argus/proof/reports /srv/argus/proof/exports /srv/argus/proof/runs \
+  /srv/argus/atlas /srv/argus/dem
 
 # Install the Caddyfile at a fixed path OUTSIDE the swapped stack tree,
 # truncating in place: the running container's bind mount pins the inode it
@@ -38,7 +39,7 @@ cat Caddyfile > /opt/argus/Caddyfile
   || echo "restore-seed.sh failed -- demo tiers stay empty; see the error above and docs/runbook.md (Seed the tape)" >&2
 
 # The sourced env above also feeds compose's ${VAR} interpolation (DOMAIN and
-# the mount targets); services themselves read config via env_file as before.
+# the mount targets); each service lists the keys it gets.
 # -p pins the project name: compose derives it from the compose-file directory
 # otherwise, and this file used to live in /opt/argus ("argus") but now lives
 # in /opt/argus/stack -- an unpinned name would orphan every container and

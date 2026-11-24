@@ -2,7 +2,7 @@
 #
 # Build "the tape": a single tape.tar.zst holding the recorded pipeline run that
 # core restores on first boot. Run this locally, against the stores the real
-# pipeline populated (README > The tape, step 1). Invoked via `make tape`.
+# pipeline populated (docs/tape.md, step 1). Invoked via `make tape`.
 #
 # Archive layout -- the contract this script SHARES with two restore sides:
 # core's (stack/core/restore-tape.sh) reads the store dumps; the demo host's
@@ -17,6 +17,8 @@
 #     demo/quarry/...               quarry provenance pool (QUARRY_HOME)
 #     demo/exports/...              curated export forge renders configs from
 #     demo/proof/...                precomputed EvalReports proof replays (#9)
+#     demo/atlas/...                finished atlas jobs (job.json, previews, PMTiles)
+#     demo/dem/...                  DEMs and vectors atlas may name (GET /inputs)
 #
 # Collections are discovered from the live Qdrant, not hardcoded: cortex's
 # canonical ones are image_embeddings / tagset_embeddings, but callers may use
@@ -47,6 +49,8 @@
 #     SRC_QUARRY_HOME    quarry provenance pool    -> demo/quarry  (or $QUARRY_HOME)
 #     SRC_FORGE_EXPORTS  curated export + captions -> demo/exports
 #     SRC_PROOF_DIR      precomputed EvalReports    -> demo/proof
+#     SRC_ATLAS_JOBS     finished atlas jobs        -> demo/atlas
+#     SRC_ATLAS_DEM      DEMs atlas may name        -> demo/dem
 #
 # A Qdrant snapshot only restores into the SAME minor version, so the build
 # refuses to pack a tape the demo could not restore. The minor is read from the
@@ -67,7 +71,7 @@
 #     R2_URL_EXPIRY          presign lifetime, default 168h (7d, R2's max)
 #
 # Deliberately dependency-light: pg_dump, curl, jq, tar+zstd on the host, and
-# Docker for the MinIO client (the minio/mc image, so there's no `mc` to install).
+# Docker for the MinIO client (the pgsty/mc image, so there's no `mc` to install).
 
 set -euo pipefail
 
@@ -90,7 +94,7 @@ SRC_S3_ACCESS_KEY="${SRC_S3_ACCESS_KEY:-${CORTEX_S3_ACCESS_KEY:-minioadmin}}"
 SRC_S3_SECRET_KEY="${SRC_S3_SECRET_KEY:-${CORTEX_S3_SECRET_KEY:-minioadmin}}"
 SRC_S3_BUCKET="${SRC_S3_BUCKET:-${CORTEX_S3_BUCKET:-argus-tape}}"
 OUT="${OUT:-tape.tar.zst}"
-MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}"
+MC_IMAGE="${MC_IMAGE:-pgsty/mc:RELEASE.2026-11-12T00-00-00Z}"
 
 # Demo-tier seed sources (#9). Each optional -- unset means that tier ships empty.
 SRC_SAMPLES="${SRC_SAMPLES:-}"
@@ -227,7 +231,7 @@ blob_count="$(find "$work/blobs" -type f | wc -l | tr -d ' ')"
 # subtree that the demo host's restore-seed.sh extracts (core ignores it). Each
 # source is optional: unset yields an empty subtree and a warning, so a core-only
 # tape (the pre-#9 shape) still builds and restores. The subtree names ARE the
-# contract with restore-seed.sh -- samples/quarry/exports/proof.
+# contract with restore-seed.sh -- samples/quarry/exports/proof/atlas/dem.
 say "demo-tier seed  <-  local dirs (#9)"
 mkdir -p "$work/demo"
 demo_files=0
@@ -250,6 +254,8 @@ capture_tree samples "$SRC_SAMPLES"       samples
 capture_tree quarry  "$SRC_QUARRY_HOME"   quarry
 capture_tree forge   "$SRC_FORGE_EXPORTS" exports
 capture_tree proof   "$SRC_PROOF_DIR"     proof
+capture_tree atlas   "${SRC_ATLAS_JOBS:-}" atlas
+capture_tree dem     "${SRC_ATLAS_DEM:-}"  dem
 
 # quarry's store is WAL-mode SQLite and the demo mounts its pool :ro -- quarry
 # 0.2.3+ refuses to serve a DB with a non-empty -wal sidecar from a read-only
@@ -273,7 +279,7 @@ done < <(find "$work/demo" -path "$work/demo/quarry/*" -name '*-wal' -type f -pr
 
 # --- 4. manifest + archive ---------------------------------------------------
 {
-  echo "# argus tape -- restored into core on first boot (README > The tape)"
+  echo "# argus tape -- restored into core on first boot (docs/tape.md)"
   echo "lineage_rows=$pg_rows"
   echo "qdrant_collections=$qdrant_count"
   # Recorded because it is a restore PRECONDITION, not trivia: these snapshots

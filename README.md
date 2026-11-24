@@ -1,254 +1,114 @@
 # argus-halo
 
-Infrastructure for the public [Argus](https://github.com/smk762?tab=repositories&q=argus) demo. Two Hetzner hosts, split public/private, provisioned by Terraform with state in HCP Terraform.
+[![terraform](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml/badge.svg?branch=dev)](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Part of the Argus suite (quarry → curator → lens → forge → proof, over [cortex](https://github.com/smk762/argus-cortex)). *Halation* — the bloom of light around a bright point on film, the halo the lens can't help but throw.
+Terraform for a public, read-only deployment of the [Argus](https://dragonhound.dev) ML-tooling suite: two Hetzner hosts split public/private, behind Cloudflare, with state in HCP Terraform. About €11 a month.
+
+> **Project page:** [halo.dragonhound.dev](https://halo.dragonhound.dev). **Status:** the stack is not currently running. The public demos on [dragonhound.dev](https://dragonhound.dev) are static; this repository is the full-stack deployment. It is validated in CI by mocked-provider plans and by booting the demo tier from its pinned images.
+
+```mermaid
+flowchart TB
+  visitor([Visitor]) -->|HTTPS| cf[Cloudflare<br/>proxy, strict TLS, rate limit]
+  cf -->|80/443| caddy
+
+  subgraph demo[demo host: public, disposable]
+    caddy[Caddy<br/>edge refusals, body caps] --> studio[argus-studio]
+    caddy --> services[lens, curator, quarry<br/>forge, proof, atlas<br/>read-only]
+  end
+
+  subgraph core[core host: no public data ports]
+    stores[(Postgres, Qdrant, Silo)]
+    prom[Prometheus, Grafana]
+  end
+
+  demo ---|"private network 10.0.1.0/24"| core
+  r2[(R2: the recorded run)] -.->|restored on first boot| core
+  r2 -.->|seed data| demo
+  admin([Admin IP]) -.->|SSH, Grafana| core
+  admin -.->|SSH| demo
+```
+
+## What to look at
+
+| If you care about | See |
+|---|---|
+| Catching a bad plan before it half-applies | [preflight.tf](preflight.tf): a postcondition checks the server type against live Hetzner stock and lists what is available instead |
+| Testing infrastructure without credentials | [tests/security.tftest.hcl](tests/security.tftest.hcl): `terraform test` plans against mocked providers and asserts firewall, TLS, DNS and rate-limit properties |
+| Dangerous inputs | [variables.tf](variables.tf): `admin_ip = 0.0.0.0/0` fails validation |
+| Not replacing hosts to bump a version | [stack/](stack/): `user_data` carries only config and a fetcher, because it is ForceNew. Service definitions update in place |
+| Guarding the one irreplaceable thing | [dns.tf](dns.tf): `prevent_destroy` on the R2 bucket, so `terraform destroy` refuses |
+| Cross-file invariants `validate` cannot see | [scripts/check-cloud-init.sh](scripts/check-cloud-init.sh): renders templates, then checks routes, WAF, environment, pins and read-only posture agree |
+| Proving a public attack surface | [scripts/smoke-demo.py](scripts/smoke-demo.py): boots the demo tier from its real pins and probes what it refuses |
+
+## Layout
 
 ```
-                    Cloudflare (proxy, TLS, DNS)
-                              │
-                    argus.dragonhound.dev
-                              │
-   ┌──────────────────────────▼──────────────────────────┐
-   │  demo          public, disposable          cx23     │
-   │  caddy · frontend · lens · curator                  │
-   │  quarry · forge · proof                             │
-   └──────────────────────────┬──────────────────────────┘
-                              │  10.0.1.0/24 — private, unrouted
-   ┌──────────────────────────▼──────────────────────────┐
-   │  core          no public data ports        cx23     │
-   │  postgres (lineage) · qdrant (vectors) · minio       │
-   │  prometheus · grafana (admin-IP only)                │
-   └─────────────────────────────────────────────────────┘
-                              ▲
-                    R2: seeded tape dump
+*.tf                 root: network, the two hosts, DNS/TLS, WAF, preflight
+modules/{core,demo}  one server and firewall each, plus its cloud-init
+modules/stock        which server types can be built in a location right now
+stack/{core,demo}    compose files, Caddyfile and restore scripts the hosts fetch
+tests/               terraform test, against mocked providers
+scripts/             config checker, smoke test, tape builder
+web/                 static project page (halo.dragonhound.dev)
+docs/                decisions, security, environment, tape, monitoring, runbook
 ```
-
-**Cost:** 2 × CX23 @ €5.49/mo = **€10.98/mo**. R2 is inside the 10 GB free tier.
 
 ## Quick start
 
+Check it without any account:
+
 ```bash
-terraform login                      # HCP Terraform
-# set `organization` in versions.tf, create the workspace (CLI-driven)
+make validate   # templates, routes, pins, fmt, validate
+make test       # terraform test, mocked providers
+make smoke      # boot the demo tier in Docker and probe it (about 14 GB of images)
+```
+
+Deploy it:
+
+```bash
+terraform login                                # HCP Terraform; set your org in versions.tf
 cp terraform.tfvars.example terraform.tfvars   # or use workspace variables
 terraform init
 terraform plan
 terraform apply
 ```
 
-Tear down just the public half, leaving the stores up:
-
-```bash
-terraform destroy -target=module.demo
-```
-
-For the full lifecycle — pre-deploy gates, verification, tape seeding, teardown,
-secret rotation, troubleshooting — see the [deploy runbook](docs/runbook.md).
+`terraform destroy -target=module.demo` tears down the public half and leaves the stores up. The [runbook](docs/runbook.md) covers the full lifecycle: pre-deploy gates, verification, in-place updates, secret rotation, teardown and troubleshooting.
 
 ## Decisions
 
-**Why two hosts, when it all fits on one.** It does fit — the tape is ~600 images, under 2 GB of blobs, a few thousand lineage rows, and roughly 2.5 MB of Qdrant vectors. The split is not about capacity or protecting state. It's blast radius: the demo tier exposes curator's `/scan/folder` to the internet, and a compromise there should not land on the database. Postgres, Qdrant and MinIO bind to `10.0.1.10` only. Hetzner firewalls filter the public interface exclusively, so the stores are unreachable from outside by construction rather than by a rule that could be edited wrong.
+Each is argued in [docs/decisions.md](docs/decisions.md).
 
-**Why no GPU.** GPU operations are re-enacted, not simulated. The real pipeline runs once on local hardware; cortex's lineage store captures `source_asset → caption → human_edit → dataset_membership` — that DAG *is* the recording. The demo replays genuine captured output. CPU paths (curator scans, dedup, export) run live, because `argus-curator[server]` never needed a GPU; the `gpu` extra is only for optional detectors and embeddings.
-
-**Why the full suite still fits 2 × CX23.** When quarry, forge and proof join the demo ([#7](https://github.com/smk762/argus-halo/issues/7)) they come in **read-only/replay** — no live training, no live eval — so the footprint stays 2 × CX23 at €10.98/mo and no GPU host is provisioned ([#10](https://github.com/smk762/argus-halo/issues/10)). The deciding weight is proof: its `[score]` stack pulls torch and insightface, several GB of image and a resident-memory tax a CX23 can't absorb alongside the rest. The demo image ships **without** the scorer and serves canned reports instead ([argus-proof#45](https://github.com/smk762/argus-proof/issues/45)). Same posture as *Why no GPU* above — the GPU work is replayed from what the real run recorded, not recomputed on the demo box. Revisit only if live `/forge run` or live `/proof` eval becomes a demo requirement, and that's a re-scope, not a resize.
-
-**Why no volume.** The tape is a build artifact with a long build time, not precious data — expensive to regenerate (GPU hours) but fully reproducible. Durability lives in the R2 dump, not in a block device. Adding `hcloud_volume` + `prevent_destroy` for 2 GB on a 40 GB disk would be theatre. `prevent_destroy` sits on the R2 bucket instead (`dns.tf`), which is where durability actually lives — a plain `terraform destroy` refuses rather than taking the one artifact that costs GPU hours to regenerate. Revisit if the tape outgrows the root disk.
-
-**Why not the OVH dedicated box.** A spare RISE-1 (Xeon-E 2386G, 64 GB ECC) was available at zero marginal cost and is far better hardware. Rejected on two counts: the workload cannot use 64 GB — Postgres holds metadata, Qdrant holds ~2.5 MB, MinIO is disk-bound — and more importantly, infrastructure pinned to a specific box nobody else owns can't be reproduced by a stranger. `git clone && terraform apply` is the point.
-
-**Why Cloudflare proxied.** Hides the origin address, terminates edge TLS, absorbs probes. The zone's SSL mode is pinned to **Full (strict)** in `dns.tf` — Caddy holds a real certificate at the origin, and anything less either talks plaintext to an origin that redirects to HTTPS (Flexible, an infinite loop) or skips validating the certificate it asked us to install. It's Terraform's to hold, not a checklist item.
-
-**Why our own compose, not argus-studio's.** [argus-studio](https://github.com/smk762/argus-studio) already ships suite compose orchestration — but it's a single-host *developer* stack: `up --build` from sibling checkouts, profiles, a GPU override, source bind-mounts. This demo is deployment-shaped and different in kind: two hosts with a public/private split, pinned published images (no build context), Caddy terminating real TLS at the origin, and the core stores (postgres/qdrant/minio) bound to the private network — none of which studio's dev compose models. So the demo keeps a small, purpose-built compose per tier and consumes studio only as the published `frontend` image. The suite images it references are tracked in [#2](https://github.com/smk762/argus-halo/issues/2).
-
-**Why the service definitions are fetched, not baked into `user_data`.** `hcloud_server.user_data` is ForceNew, so anything living there can only change by replacing the host — and the things that change most (image pins, Caddy routes, monitoring configs) were exactly what lived there. That inverted the pins' own rationale: the Grafana pin protects a version-bound data volume, and bumping it destroyed that volume ([#18](https://github.com/smk762/argus-halo/issues/18)). Now `user_data` carries only config (`.env`, `deploy.env`) and a tiny fetcher (`argus-update`); the structural files live in [`stack/`](stack/) and are fetched at boot and on demand from the tracked ref (`stack_ref`, default `main`). A pin bump is a merge to `dev`, a fast-forward of `main` (see [Branches](#branches)), plus `ssh <host> /opt/argus/argus-update` — volumes, certificates and the host's IP survive. The trade: advancing `main` **is** the deploy channel, and first boot depends on GitHub being reachable. See runbook §4b.
+- **Two hosts, for blast radius.** Everything fits on one. The split keeps a compromise of the public tier away from the database.
+- **No GPU.** GPU work ran once on local hardware and was recorded. The demo replays that output.
+- **Silo for object storage.** Upstream MinIO stopped publishing images and archived its repository; [Silo](https://github.com/pgsty/silo) is the maintained fork.
+- **No block volume.** The data is a reproducible build artifact, so durability lives in R2.
+- **Service definitions are fetched, not baked into `user_data`.** A version bump is a merge and an in-place update; volumes, certificates and the IP survive. The trade is that advancing `main` is the deploy channel.
 
 ## Security
 
-Curator's `/scan/folder`, `/scan/folder/stream` and `/export` take caller-supplied paths. Until [argus-curator#3](https://github.com/smk762/argus-curator/issues/3) they bypassed the `_resolve_within()` containment that `/folders`, `/thumb` and `/upload` apply — a path-traversal and information-disclosure surface on a public host, made worse by `--cors` reflecting any origin. **Fixed in argus-curator v0.2.0**: those endpoints now resolve `folder`/`dest` under `ARGUS_CURATOR_SCAN_ROOT` (and an export root), `move` is gated behind `--allow-move`, and `--cors` no longer reflects arbitrary origins. The demo pins `argus-curator:0.2.1` so it runs the enforced build — this was the deploy gate in [argus-halo#1](https://github.com/smk762/argus-halo/issues/1), now closed.
+[docs/security.md](docs/security.md) lists every control and the test that checks it. The short version: the proxy is a passthrough, so each service's own gating is the boundary, and the smoke test re-proves that gating on every pull request that could move a pin.
 
-**What is actually reachable.** One origin, one namespace per service: Caddy routes `/api/lens/*`, `/api/curator/*`, `/api/quarry/*`, `/api/forge/*` and `/api/proof/*` to their backends, stripping the prefix so each still sees its own paths (`/api/curator/scan/folder` arrives as `/scan/folder`). Everything else falls through to the frontend. The namespaces are what make the full suite fit one origin at all — quarry and curator both serve a `/thumb`, and proof serves `/reports`, `/models` and `/exports` at its root.
+## More
 
-**The two GPU endpoints are refused, and that is verified.** `POST /api/proof/run/stream` returns `403` (`ARGUS_PROOF_READ_ONLY=1`, and 0.2.0 is the first image carrying that mode) and `POST /api/forge/run` returns `403` (forge refuses training unless you explicitly set `ARGUS_FORGE_READONLY=0`, so the safe state is the default). Both were checked through the proxy against the pinned images. This box has no GPU by design — see *Why no GPU*. Reachability does **not** depend on how studio was built: `demo` mode only means the bundled frontend doesn't call these paths, not that they're closed. Anyone with curl reaches them either way.
-
-The namespace is a **passthrough, not a whitelist** — every endpoint a service exposes is reachable under its prefix, including ones a future image bump adds. That is a deliberate trade, made when the full suite forced it ([#7](https://github.com/smk762/argus-halo/issues/7)): proof serves `/reports`, `/models` and `/exports` at *its* root, so per-endpoint routing collided across services and had to be rediscovered every time one grew an endpoint. It is consistent with how this demo already assigns responsibility — the proxy was never the boundary — but it does mean each service's own gating is load-bearing rather than backed up by the route list.
-
-Defence in depth sits around it, none sufficient alone:
-
-- `ARGUS_CURATOR_SCAN_ROOT` points at `/srv/argus/samples`, mounted read-only into the container. `ARGUS_CURATOR_EXPORT_ROOT` is left empty, so `/export` refuses server-side. Both are **verified against the pinned image**, not assumed ([#19](https://github.com/smk762/argus-halo/issues/19)): on the pinned `argus-curator:0.2.1` (re-probed from 0.2.0, byte-identical on all six checks), export with an empty root returns `400` and writes nothing for absolute, relative and traversal destinations; `/scan/folder` and `/folders` reject `/etc`, `/`, `../../etc` and `/srv/argus/samples/../../etc` with "path escapes the mount root"; and `mode=move` returns `403`. Re-run those probes when the curator pin moves — under a passthrough namespace, a curator release that relaxed any of them would widen the public surface with no diff here.
-- The demo tier holds no database; the stores are private-network only.
-- `/api/lens/caption`, `/api/curator/scan` and `/api/curator/upload` are rate-limited at the Cloudflare edge (`waf.tf`, 15 req/min per IP): the first two protect the metered captioning key, and upload is the one unauthenticated write. The rule lowercases the path first, because Caddy matches case-insensitively and Cloudflare doesn't — without that, `/API/LENS/CAPTION/x` would route to lens and skip the limit.
-- `/api/curator/folders` and `/api/curator/thumb` are deliberately **not** rate-limited: a folder view fires thumb once per tile, so a 15/min cap would trip on one legitimate page load. Free-plan Cloudflare allows a single rule, so the cap goes where the cost is.
-- Caddy caps request bodies at 32 MB on the curator namespace. Scan-root containment bounds *where* an upload lands, not how big it is, and a per-minute rate limit doesn't bound bytes — so the body cap is its own control.
-
-`scripts/check-cloud-init.sh` asserts the routed namespaces and the rate-limit expression stay in step, and runs in CI.
-
-These are containment, not authorization — the server-side enforcement is what actually closes the hole. A read-only mount limits the blast radius of a filesystem read, it doesn't prevent one, and `ARGUS_CURATOR_UI_MODE=demo` is a frontend flag anyone can bypass with curl.
-
-Secrets are generated by `random_password` and passed to hosts via cloud-init. They land in Terraform state — which is why state is in HCP Terraform (encrypted, access-controlled) and why `*.tfvars` is gitignored.
-
-## Monitoring
-
-Prometheus and Grafana run on **core**, next to the stores — no extra host, so the €10.98/mo is unchanged. Prometheus scrapes both tiers over the private network:
-
-- **hosts** — `node_exporter` on core and demo (`10.0.1.10:9100`, `10.0.1.20:9100`)
-- **stores** — Postgres (`postgres_exporter`), Qdrant (`/metrics`), MinIO (`/minio/v2/metrics/cluster`, served token-free on the private net)
-
-Only Grafana is exposed, and only to `admin_ip` — the same trust model as SSH, by a firewall rule rather than by construction, because it's an admin UI and not a data store. Prometheus and every exporter stay private; tunnel in to reach the Prometheus UI.
-
-```bash
-terraform output -raw grafana_password         # admin password (user: admin)
-open "$(terraform output -raw grafana_url)"     # http://<core ip>:3000, from your admin IP
-ssh -L 9090:10.0.1.10:9090 root@<core ip>       # then Prometheus at http://localhost:9090
-```
-
-Grafana ships with the Prometheus datasource auto-provisioned; add dashboards to taste.
-
-## Environment
-
-Config reaches the backend containers by one path on **both** tiers: Terraform
-renders a single `/opt/argus/.env` per host (from HCP workspace variables,
-`random_password` resources, and derived values), cloud-init writes it `0600`,
-and every backend service loads it with Compose `env_file`. No per-service
-inline secrets, one file to reason about per host. A second, non-secret file —
-`/opt/argus/deploy.env` — carries deploy knobs (`TAPE_DUMP_URL`, addresses, the
-tracked stack ref); `stack/<tier>/apply.sh` sources both, which also feeds
-compose's `${VAR}` interpolation in `stack/<tier>/compose.yaml`, so mount
-targets reuse the same variables the services read. The one exception is the
-demo's `frontend`, which gets an inline `environment:` block and never reads
-`.env` — see the frontend section below. To add a key: declare the Terraform
-variable, thread it into that tier's `templatefile(...)`, and add the line to
-the `.env` block — unless the frontend is the consumer, in which case it goes
-in the `frontend` service's `environment:` block instead. Where each value
-comes from:
-
-- **Sensitive / operator-supplied** → a **Sensitive** HCP workspace variable.
-- **Generated** → a `random_password` resource (never printed, never committed).
-- **Static** → a `default` in code, or a literal in the template.
-
-### core — `/opt/argus/.env`
-
-| Key | Consumer | Source | Default | Sensitive |
-|---|---|---|---|---|
-| `POSTGRES_USER` | postgres | code | `argus` | no |
-| `POSTGRES_PASSWORD` | postgres, postgres-exporter | `random_password` | generated | **yes** |
-| `POSTGRES_DB` | postgres | code | `argus` | no |
-| `MINIO_ROOT_USER` | minio | `minio_access_key` | `argus` | no |
-| `MINIO_ROOT_PASSWORD` | minio | `random_password` | generated | **yes** |
-| `MINIO_PROMETHEUS_AUTH_TYPE` | minio | code | `public` | no |
-| `DATA_SOURCE_NAME` | postgres-exporter | derived (embeds pw) | — | **yes** |
-| `GF_SERVER_HTTP_PORT` | grafana | `grafana_port` | `3000` | no |
-| `GF_SECURITY_ADMIN_PASSWORD` | grafana | `random_password` | generated | **yes** |
-| `GF_USERS_ALLOW_SIGN_UP` | grafana | code | `false` | no |
-| `GF_AUTH_ANONYMOUS_ENABLED` | grafana | code | `false` | no |
-
-### demo — `/opt/argus/.env`
-
-| Key | Consumer | Source | Default | Sensitive |
-|---|---|---|---|---|
-| `ARGUS_CURATOR_SCAN_ROOT` | curator | `curator_scan_root` | `/srv/argus/samples` | no |
-| `ARGUS_CURATOR_EXPORT_ROOT` | curator | `curator_export_root` | `""` → `/export` refused | no |
-| `ARGUS_LENS_URL` | curator | code | `http://lens:8100` | no |
-| `ARGUS_BACKEND` | lens | code | `openai-compat` | no |
-| `ARGUS_OPENAI_COMPAT_BASE_URL` | lens | `lens_caption_base_url` | `https://api.cerebras.ai/v1` | no |
-| `ARGUS_OPENAI_COMPAT_MODEL` | lens | `lens_caption_model` | `gemma-4-31b` | no |
-| `ARGUS_OPENAI_COMPAT_API_KEY` | lens | `lens_caption_api_key` (**HCP**) | `""` → **required to caption** | **yes** |
-| `CORTEX_PG_URL` | *reserved* | core output | derived | **yes** |
-| `CORTEX_QDRANT_URL` | *reserved* | core output | derived | no |
-| `CORTEX_S3_ENDPOINT` | *reserved* | core output | derived | no |
-| `CORTEX_S3_BUCKET` | *reserved* | core output | `argus-tape` | no |
-| `CORTEX_S3_ACCESS_KEY` | *reserved* | `minio_access_key` | `argus` | no |
-| `CORTEX_S3_SECRET_KEY` | *reserved* | `random_password` | generated | **yes** |
-| `CORTEX_S3_REGION` | *reserved* | code | `us-east-1` | no |
-
-**Two honest caveats, both tracked:**
-
-- **`CORTEX_*` is reserved, not yet consumed.** The pinned `argus-lens 0.5.0` and
-  `argus-curator 0.2.1` images read *none* of the `CORTEX_*` variables as
-  configured here — 0.5.0 ships the replay backend that would, but
-  `ARGUS_BACKEND` stays `openai-compat` — so the
-  core store tier is provisioned but idle from the app tier's point of view. It's
-  wired now so a lineage-replay backend drops in without re-plumbing
-  ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)).
-- **lens captions via a live endpoint, not replay.** There's no GPU here and no
-  replay backend yet, so lens is pointed at an OpenAI-compatible vision model
-  (Cerebras `gemma-4-31b`, the only image-capable model there). Set
-  `lens_caption_api_key` in HCP or lens returns `401` on every caption. This is
-  the interim until [argus-lens#45](https://github.com/smk762/argus-lens/issues/45).
-
-### frontend (argus-studio) — runtime, but **not** in `.env`
-
-[argus-studio#56](https://github.com/smk762/argus-studio/issues/56) (shipped in
-`0.1.0`) made the frontend's API base URLs **runtime** configuration:
-the image resolves `ARGUS_*` from its environment per request instead of baking
-`NEXT_PUBLIC_*` into the bundle at build time, so one published image deploys to
-any origin. The demo sets them in the `frontend` service's `environment:` block —
-deliberately not via `.env`, which carries the caption key and store credentials
-the frontend has no business seeing:
-
-| Variable | Purpose | Demo value |
-|---|---|---|
-| `ARGUS_LENS_URL` … `ARGUS_PROOF_URL` | API bases, from the browser | `/api/<service>` — the Caddy namespaces, same origin |
-| `ARGUS_CURATOR_UI_MODE` | `demo` (bundled sample) or `live` | `demo` |
-
-## The tape
-
-The tape is the recorded pipeline run core restores on first boot: the lineage
-DAG (Postgres), the vectors (Qdrant), and the blobs (MinIO), in one
-`tape.tar.zst`.
-
-1. Run the real pipeline locally against the sample datasets; cortex records lineage.
-2. `make tape` — dumps Postgres, snapshots **every** Qdrant collection, mirrors the
-   MinIO bucket, and packs `tape.tar.zst`. Point it at your local stores with
-   `SRC_*`, or load a cortex `.env` with `ENV_FILE=path/to/.env make tape` (a bare
-   `source` won't survive `make`); see the header of
-   [scripts/build-tape.sh](scripts/build-tape.sh).
-3. Upload to the R2 bucket this repo creates. `make tape` does this for you when
-   the `R2_*` env is set (and prints a presigned URL); otherwise it stops at the
-   local archive and tells you the manual step.
-4. Set `tape_dump_url` to that presigned URL. Core restores on first boot via
-   `restore-tape.sh` (in [stack/core/](stack/core/restore-tape.sh)),
-   guarded by `/opt/argus/data/.tape-restored` so a re-run never clobbers live data.
-
-**A presigned URL expires — R2 caps them at 7 days.** Core reads `tape_dump_url`
-on *every* first boot, so a stale URL means a rebuilt core comes up with empty
-stores. The restore fails loudly and names expiry as the likely cause, but it
-fails inside cloud-init where nobody is watching. Refresh the URL before any
-planned core replace, or publish the tape at a stable address — it is a build
-artifact, not a secret, and nothing about it needs to be presigned.
-
-Qdrant snapshots only restore into the **same minor version**, so this is checked
-on both sides. `make tape` reads the minor straight out of the qdrant image pin in
-[stack/core/compose.yaml](stack/core/compose.yaml) and refuses to build
-against a local Qdrant that doesn't match — nothing to keep in sync by hand. It
-also records `qdrant_version` in `MANIFEST`, and `restore-tape.sh` re-checks that
-against the Qdrant it actually booted, *before* it touches Postgres. So a pin
-moved on one side only is caught at restore time with the stores still untouched,
-rather than leaving core half-seeded.
-
-Archive layout — the contract shared by the builder and the restore script:
-
-```
-lineage.sql                    pg_dump of the lineage DAG (schema + data)
-qdrant/<collection>.snapshot   one Qdrant snapshot per collection
-blobs/...                      a mirror of the S3/MinIO bucket
-MANIFEST                       row/collection/blob counts + source Qdrant version
-```
-
-Collections are discovered from the live Qdrant, not hardcoded, so whatever
-cortex wrote (`image_embeddings`, `tagset_embeddings`, or others) is captured.
-Restore is idempotent and safe to re-run by hand — see the runbook.
+- [Environment](docs/environment.md): every key, where it comes from, who receives it
+- [The tape](docs/tape.md): how the recorded run is built, stored and restored
+- [Monitoring](docs/monitoring.md): Prometheus and Grafana on core
 
 ## Known gaps
 
-- **No replay backend yet.** lens can't serve recorded captions from the lineage store, so it calls a live vision endpoint (Cerebras) instead, and the `CORTEX_*` store contract is provisioned but unused ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). See [Environment](#environment).
-- CI runs `fmt -check` + `validate` on every PR and on pushes to `dev` and `main`. Remote `plan` is wired but stays skipped until a `TF_API_TOKEN` repository secret is set — see `.github/workflows/terraform.yml`.
+- **Strict TLS is zone-wide.** `cloudflare_zone_setting.ssl` applies to every proxied origin in the zone. Check that each one holds a valid certificate before the first apply, or it starts returning 526.
+- **Nothing reads the core stores yet.** They are provisioned and seeded ahead of lens's lineage-replay backend ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). Until then lens captions through a hosted endpoint.
+- **The tape is not published** ([#9](https://github.com/smk762/argus-halo/issues/9)), so a fresh deploy starts with empty galleries. `/atlas` needs a seeded job, and quarry's Sources view needs a ~45 GB archive this host does not mount.
+- **Remote `plan` in CI** is wired but skipped until a `TF_API_TOKEN` secret is set.
 
 ## Branches
 
-`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`); this repo has no version tags, so there is nothing to tag afterwards. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev` so the merge commit is not left on `main` alone.
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and update them by merging `origin/dev`, never `main`. Never open a PR against `main`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`); hosts track `main`, and there are no version tags.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
+
+*Halation: the bloom of light around a bright point on film, the halo the lens can't help but throw.*

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Seeds the demo tier's read-only service data from the tape's demo/ subtree
-# (#9): quarry pool, curated export, precomputed EvalReports, and curator's
-# live-mode corpus (#14). Runs BEFORE `compose up` -- unlike core's
+# (#9): quarry pool, curated export, precomputed EvalReports, curator's
+# live-mode corpus (#14), and atlas jobs plus the DEMs they were built
+# from. Runs BEFORE `compose up` -- unlike core's
 # restore-tape.sh, which loads INTO running stores -- because these are
 # bind-mount SOURCES the containers read at start. Idempotent via a marker.
 # Same archive as scripts/build-tape.sh; only demo/ is used here (core reads
@@ -96,6 +97,8 @@ seed samples /srv/argus/samples
 seed quarry  /srv/argus/quarry
 seed exports /srv/argus/exports
 seed proof   /srv/argus/proof
+seed atlas   /srv/argus/atlas
+seed dem     /srv/argus/dem
 
 rm -rf /srv/argus/tape tape.tar.zst
 touch "$MARKER"

@@ -4,9 +4,9 @@
 # a host replacement (#18).
 #
 # ${VAR} references are docker-compose interpolation, resolved at `compose up`
-# from /opt/argus/.env + /opt/argus/deploy.env (apply.sh exports both). The same
-# .env is what services read via `env_file:` -- one file to reason about per
-# host, same as before.
+# from /opt/argus/.env + /opt/argus/deploy.env (apply.sh exports both). Each
+# service lists only the keys it needs: Grafana, the one admin-reachable UI,
+# must not hold the store credentials (#15).
 #
 # Every published port binds to ${PRIVATE_IP} -- the private interface.
 # Nothing here is reachable from the internet even if the firewall is wrong.
@@ -19,10 +19,13 @@ name: argus
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16.16
     restart: unless-stopped
     ports: ["${PRIVATE_IP}:5432:5432"]
-    env_file: /opt/argus/.env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     volumes: ["/opt/argus/data/postgres:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U argus"]
@@ -41,11 +44,16 @@ services:
 
   minio:
     # Pinned so first-boot restore behaves like the build/test environment.
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Upstream archived minio/minio and its registry images no longer pull; this
+    # is Silo, the maintained fork (same environment, metrics and protocol).
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     ports: ["${PRIVATE_IP}:9000:9000"]
-    env_file: /opt/argus/.env
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_PROMETHEUS_AUTH_TYPE=${MINIO_PROMETHEUS_AUTH_TYPE}
     volumes: ["/opt/argus/data/minio:/data"]
 
   # --- monitoring ---------------------------------------------------
@@ -73,7 +81,8 @@ services:
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     restart: unless-stopped
-    env_file: /opt/argus/.env
+    environment:
+      - DATA_SOURCE_NAME=${DATA_SOURCE_NAME}
     depends_on: [postgres]
 
   prometheus:
@@ -94,7 +103,11 @@ services:
     # GF_SERVER_HTTP_PORT in .env (deploy.env carries the same number as
     # GRAFANA_PORT for this line).
     ports: ["${GRAFANA_PORT}:${GRAFANA_PORT}"]
-    env_file: /opt/argus/.env
+    environment:
+      - GF_SERVER_HTTP_PORT=${GF_SERVER_HTTP_PORT}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=${GF_USERS_ALLOW_SIGN_UP}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED}
     volumes:
       - grafana_data:/var/lib/grafana
       - /opt/argus/stack/grafana/provisioning:/etc/grafana/provisioning:ro

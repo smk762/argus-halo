@@ -1,0 +1,39 @@
+name: Project page
+
+# Publishes web/ to the Cloudflare Pages project argus-halo (halo.dragonhound.dev).
+# Needs the repo secrets CLOUDFLARE_API_TOKEN (Pages: Edit) and
+# CLOUDFLARE_ACCOUNT_ID; without them the job only checks the page. The custom
+# domain is attached to the project by hand once.
+on:
+  push:
+    branches: [dev]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: vendored design layer is unedited
+        run: node web/vendor/dh/sync-shared.mjs --check web
+
+      - if: env.HAS_TOKEN != 'true'
+        run: echo "::notice::Cloudflare secrets not set; page checked but not deployed."
+
+      - if: env.HAS_TOKEN == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy web --project-name=argus-halo --branch=main

@@ -30,6 +30,17 @@ jobs:
       - name: validate
         run: terraform validate
 
+      # Plans the whole configuration against mocked providers and asserts the
+      # security properties: no public data ports, SSH scoped to admin_ip, and
+      # so on. Needs no credentials.
+      - name: test
+        run: terraform test
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        run: tflint --recursive
+
       # validate never expands templatefile(), so it sees none of the cloud-init
       # YAML, the bash embedded in it, or the Caddyfile that routes the public
       # entrypoint -- the highest-consequence files in the repo were unchecked.
@@ -39,6 +50,23 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           ./scripts/check-cloud-init.sh
+
+  # Boots the demo tier from its real compose file and pins, and proves what it
+  # refuses. A pin bump cannot merge without passing this.
+  smoke:
+    name: demo smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The suite images unpack to about 14 GB.
+      - name: free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+      - name: boot and probe
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/smoke-demo.py
 
   # Remote plan runs in HCP Terraform, which holds the provider tokens as
   # workspace variables. Enable by setting the TF_API_TOKEN repository secret
