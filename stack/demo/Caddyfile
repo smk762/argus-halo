@@ -15,16 +15,18 @@
 # Why a namespace and not the bare endpoint names. Enumerating each backend's
 # endpoints here meant the list had to be rediscovered every time a service
 # grew one. It also does not scale to the full suite: proof serves /reports,
-# /models, /exports and /run/stream at ITS root, which collide with the
-# frontend's pages and near-collide with curator's /export (#8).
+# /models, /exports and /run/stream at ITS root, and atlas serves /jobs,
+# /controls and /bake at its root, which collide with the frontend's pages
+# and near-collide with curator's /export (#8).
 #
 # The trade, stated plainly: this is a passthrough, not a whitelist. Every
 # endpoint a service exposes is now reachable under its prefix, including
 # ones added by a future image bump. That is consistent with how this demo
 # already assigns responsibility -- containment is curator's job, enforced
 # server-side under ARGUS_CURATOR_SCAN_ROOT, and the proxy was never the
-# boundary (README > Security) -- but it does mean a service's own gating is
-# now load-bearing rather than backed up by the route list.
+# boundary (docs/security.md) -- but it does mean a service's own gating is
+# load-bearing. @offlimits below backs it up only for the routes it names, and
+# scripts/smoke-demo.py proves the rest on every PR.
 #
 # Caveat for anything added later: the prefix is STRIPPED, so a service that
 # emits absolute URLs must be told its mount point (FastAPI: root_path) or
@@ -53,6 +55,25 @@
   @admin path /api/*/admin /api/*/admin/*
   handle @admin {
     respond "admin endpoints are not exposed on this host" 404
+  }
+
+  # Routes this demo never calls that write, remove, fetch or spend. Every one
+  # is also refused by its service's own config where the service offers a
+  # switch; this is the second lock, and for lens's /v1 (a caption route that
+  # would sidestep the waf.tf path list), curator's purge and atlas's CPU
+  # routes it is the main one. Must stay ahead of the handle_path routes.
+  @offlimits path /api/lens/v1 /api/lens/v1/* /api/lens/immich /api/lens/immich/* /api/lens/caption/folder /api/lens/caption/url /api/curator/scans/purge /api/curator/scan/*/delete /api/quarry/archives/*/fetch /api/forge/run /api/forge/run/* /api/proof/run/* /api/proof/score /api/atlas/osm /api/atlas/bake /api/atlas/bake/* /api/atlas/controls /api/atlas/tiles /api/atlas/purge /api/atlas/purge/*
+  handle @offlimits {
+    respond "not available on the public demo" 403
+  }
+
+  # Nothing in the demo is removable by a visitor.
+  @delete {
+    method DELETE
+    path /api/*
+  }
+  handle @delete {
+    respond "not available on the public demo" 403
   }
 
   handle_path /api/lens/* {
@@ -92,6 +113,17 @@
       max_size 32MB
     }
     reverse_proxy proof:8104
+  }
+
+  handle_path /api/atlas/* {
+    # Bake and OSM fetch are 403 on this host, and the jobs mount is :ro,
+    # so a controls/tiles body never becomes a warp. The body is still
+    # read first. These requests are JSON (a bbox, a DEM *name*), not an
+    # upload, so the cap is tighter than the curator namespace.
+    request_body {
+      max_size 1MB
+    }
+    reverse_proxy atlas:8105
   }
 
   handle {

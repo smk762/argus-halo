@@ -131,7 +131,7 @@ wait_for minio curl -fsS "http://$PRIVATE_IP:9000/minio/health/ready"
 echo "restoring minio blobs into $S3_BUCKET"
 docker run --rm --network host -v /opt/argus/tape/blobs:/blobs:ro \
   -e PRIVATE_IP -e S3_BUCKET -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
-  --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -ec '
+  --entrypoint sh pgsty/mc:RELEASE.2026-11-12T00-00-00Z -ec '
     mc alias set core "http://$PRIVATE_IP:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
     mc mb --ignore-existing "core/$S3_BUCKET" >/dev/null
     mc mirror --overwrite /blobs "core/$S3_BUCKET"

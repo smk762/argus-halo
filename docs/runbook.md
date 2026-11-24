@@ -54,7 +54,7 @@ Mode = Remote**.
 Everything else (`server_type`, `location`, `domain`, `image`, `network_zone`,
 and the `lens_caption_*` endpoint/model) has a working default; override only if
 you need to. `lens_caption_api_key` has no default — without it lens returns
-`401` on every caption (see README > Environment).
+`401` on every caption (see docs/environment.md).
 
 ---
 
@@ -65,23 +65,16 @@ are now enforced by code and need no human:
 
 - `server_type` — `plan` checks it against live Hetzner stock and names the
   working alternatives (`preflight.tf`).
-- **Curator containment** — shipped in argus-curator v0.2.0; the demo pins v0.2.1
-  and verified against that tag (#19, re-probed from 0.2.0 and byte-identical on
-  all six checks): scan/folders/thumb/upload resolve under
-  `ARGUS_CURATOR_SCAN_ROOT`, `mode=move` is `403`, and `/export` — governed by the
-  *separate* `ARGUS_CURATOR_EXPORT_ROOT`, left **empty** here — refuses outright.
-  argus-halo#1 is closed. Re-verify when the curator pin moves: `/api/curator/*`
-  is a passthrough, so this is the public boundary (README > Security).
+- **The public surface** — `make smoke` (CI, every PR) boots the demo tier from
+  its pins and proves every refusal it relies on: no live GPU work, no writes,
+  curator's path containment (docs/security.md).
 - **Cloudflare SSL mode** — pinned to Full (strict) by `cloudflare_zone_setting`
   in `dns.tf`. Note this is a *zone-wide* setting: it applies to every hostname on
   dragonhound.dev, not just this demo's.
-- **No live GPU work is reachable** — `POST /api/proof/run/stream` and
-  `POST /api/forge/run` both return `403` on the pinned images, verified through
-  the proxy. proof needs `ARGUS_PROOF_READ_ONLY=1` (set in `.env`); forge refuses
-  by default and would need `ARGUS_FORGE_READONLY=0` to enable, which we never set.
 - **Every image tag is pullable** — `scripts/check-cloud-init.sh` (CI, every PR)
   asks each registry for every pinned manifest in both rendered compose files;
-  a 404 fails the build. All services are pinned — `frontend` was the last
+  a 404 fails the build. A registry that denies the pull outright (401) only warns, so read
+  the output. All services are pinned — `frontend` was the last
   ([#2](https://github.com/smk762/argus-halo/issues/2)), which closed the old
   deploy gate. The failure mode the check prevents is total: `docker compose
   up -d` fails as a unit on an unpullable image, so it does not degrade to one
@@ -120,9 +113,9 @@ curator confines paths to `ARGUS_CURATOR_SCAN_ROOT`, and an empty
 `ARGUS_CURATOR_EXPORT_ROOT` makes `/export` refuse. `folders` and `thumb` are
 deliberately uncapped — a folder view fires thumb once per tile and would trip the
 limit on its own. Note the namespace is a passthrough, so a service's *whole* API
-is reachable under its prefix — see README > Security. `demo`/`live` is runtime
+is reachable under its prefix — see docs/security.md. `demo`/`live` is runtime
 config on the frontend service since studio 0.1.0 (argus-studio#56) — see
-README > Environment.
+docs/environment.md.
 
 ---
 
@@ -136,8 +129,8 @@ terraform apply         # type 'yes' at the prompt
 
 Expected resource graph on a clean apply (14 resources):
 
-The demo host now runs seven containers — `caddy`, `frontend`, `lens`, `curator`,
-`quarry`, `forge`, `proof` — plus `node-exporter`. Core is unchanged.
+The demo host now runs eight containers: `caddy`, `frontend`, `lens`, `curator`,
+`quarry`, `forge`, `proof`, `atlas` — plus `node-exporter`. Core is unchanged.
 
 - `hcloud_ssh_key.admin`
 - `hcloud_network.argus` + `hcloud_network_subnet.argus`
@@ -291,8 +284,10 @@ ssh root@$(terraform output -raw core_ipv4) \
 
 The **demo host** has its own counterpart, `restore-seed.sh`: it reads the same
 tape's `demo/` subtree, drops each tier onto its bind-mount source
-(`/srv/argus/<tier>`), and makes the trees world-readable (`a+rX` — quarry
-0.2.3+ reads its `:ro` pool as uid 10001). It runs before `compose up` on first
+(`/srv/argus/samples`, `quarry`, `exports`, `proof`, `atlas`, `dem`), and
+makes the trees world-readable (`a+rX` — quarry 0.2.3+ reads its `:ro` pool
+as a non-root user, uid 10001 on that release). `atlas` and `dem` are
+optional; without them `/atlas` lists no jobs. It runs before `compose up` on first
 boot and no-ops once `/srv/argus/.seed-restored` exists; to refresh the demo
 tiers in place, delete that marker and re-run with a fresh URL:
 
@@ -406,7 +401,7 @@ workspace variable.
 | `plan`: organization not found | org name typo in `versions.tf` | match `dragonhound_argus`, re-init |
 | `plan`: `server_type … cannot be built in location …` | plan retired, or out of stock in that location | the error lists what IS available there — set `server_type` (or `location`) to one of them |
 | Demo returns 502 | a backend container is down but Caddy is up | the §4 `compose ps` invocation (and `logs`) on demo — the env prefix matters, the compose file interpolates from `.env`/`deploy.env` |
-| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | the §4 `compose ps` invocation with `-a` on demo will be empty; confirm every image in the compose is pullable — the six GHCR pins (#2) **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
+| Demo returns 521/522, nothing listening | one image failed to pull, so `compose up` aborted the whole stack | the §4 `compose ps` invocation with `-a` on demo will be empty; confirm every image in the compose is pullable — the seven GHCR pins **and** the Docker Hub ones (`caddy:2`, `node-exporter`), whose pull failure aborts identically. `check-cloud-init.sh` asserts all of them per PR |
 | `413` on an upload | body exceeds the 32 MB cap in the demo Caddyfile | raise `max_size` in the `/api/curator/*` block, or split the upload |
 | `apply`: Cloudflare 403 on the zone setting | token predates `cloudflare_zone_setting`, lacks Zone Settings:Edit | add the permission to the token, update the workspace variable |
 | Redirect loop / TLS handshake errors | zone drifted off Full (strict) | re-`apply` — `cloudflare_zone_setting.ssl` puts it back |

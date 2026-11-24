@@ -22,7 +22,7 @@ envsubst '$PRIVATE_IP $DEMO_PRIVATE_IP' \
 mkdir -p /opt/argus/data/postgres /opt/argus/data/qdrant /opt/argus/data/minio
 
 # The sourced env above also feeds compose's ${VAR} interpolation (PRIVATE_IP,
-# GRAFANA_PORT); services themselves read config via env_file as before.
+# GRAFANA_PORT); each service lists the keys it gets.
 # -p pins the project name: compose derives it from the compose-file directory
 # otherwise, and this file used to live in /opt/argus ("argus") but now lives
 # in /opt/argus/stack -- an unpinned name would orphan every container and

@@ -63,9 +63,13 @@ variable "admin_ip" {
 # --- placement ---------------------------------------------------------------
 
 variable "domain" {
-  description = "Public hostname for the demo tier."
+  description = "Public hostname for the demo tier, one label under the zone. Not halo.dragonhound.dev: that is this project's static page (web/), and Cloudflare refuses an A record beside its CNAME."
   type        = string
-  default     = "argus.dragonhound.dev"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.domain)) && var.domain != "halo.dragonhound.dev"
+    error_message = "domain must be a lowercase hostname other than halo.dragonhound.dev, which serves the static project page."
+  }
 }
 
 variable "location" {
@@ -103,7 +107,7 @@ variable "image" {
 variable "tape_dump_url" {
   description = <<-EOT
     Presigned URL of the seeded lineage dump, restored into core on first boot.
-    Leave empty to start with empty stores. See README > The tape.
+    Leave empty to start with empty stores. See docs/tape.md.
 
     R2 caps presigned URLs at 7 days, and core reads this on EVERY first boot --
     so refresh it before any apply that recreates core (a password rotation, a
@@ -131,7 +135,7 @@ variable "lens_caption_api_key" {
     API key for the OpenAI-compatible endpoint lens captions through (default
     Cerebras). Required for lens to caption; set as a Sensitive workspace
     variable. Interim until argus-lens#45 (lineage replay) removes the need for
-    a live model. See README > Environment.
+    a live model. See docs/environment.md.
   EOT
   type        = string
   default     = ""

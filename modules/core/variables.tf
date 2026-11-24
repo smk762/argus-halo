@@ -1,12 +1,36 @@
-variable "project" { type = string }
-variable "location" { type = string }
-variable "server_type" { type = string }
-variable "image" { type = string }
-variable "network_id" { type = string }
-variable "admin_ip" { type = string }
+variable "project" {
+  description = "Name prefix applied to every resource."
+  type        = string
+}
+
+variable "location" {
+  description = "Hetzner location."
+  type        = string
+}
+
+variable "server_type" {
+  description = "Hetzner server type."
+  type        = string
+}
+
+variable "image" {
+  description = "Base OS image."
+  type        = string
+}
+
+variable "network_id" {
+  description = "Private network to attach to."
+  type        = string
+}
+
+variable "admin_ip" {
+  description = "CIDR allowed to reach SSH."
+  type        = string
+}
 
 variable "ssh_key_ids" {
-  type = list(string)
+  description = "Hetzner SSH key ids installed on the host."
+  type        = list(string)
 }
 
 variable "private_ip" {
@@ -15,29 +39,34 @@ variable "private_ip" {
 }
 
 variable "postgres_password" {
-  type      = string
-  sensitive = true
+  description = "Postgres password."
+  type        = string
+  sensitive   = true
 }
 
 variable "minio_access_key" {
-  type    = string
-  default = "argus"
+  description = "MinIO root user."
+  type        = string
+  default     = "argus"
 }
 
 variable "minio_secret_key" {
-  type      = string
-  sensitive = true
+  description = "MinIO root password."
+  type        = string
+  sensitive   = true
 }
 
 variable "s3_bucket" {
-  type    = string
-  default = "argus-tape"
+  description = "Bucket the tape restores into."
+  type        = string
+  default     = "argus-tape"
 }
 
 variable "tape_dump_url" {
-  type      = string
-  default   = ""
-  sensitive = true
+  description = "Presigned tape URL; empty starts the host unseeded."
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 # --- monitoring --------------------------------------------------------------
@@ -48,8 +77,9 @@ variable "demo_private_ip" {
 }
 
 variable "grafana_admin_password" {
-  type      = string
-  sensitive = true
+  description = "Grafana admin password."
+  type        = string
+  sensitive   = true
 }
 
 variable "grafana_port" {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halo · Dragonhound Labs</title>
+<meta name="description" content="Terraform for a two-host, public/private deployment of the Argus suite on Hetzner and Cloudflare, with credential-free tests.">
+<meta name="color-scheme" content="light dark">
+<link rel="canonical" href="https://halo.dragonhound.dev/">
+<meta property="og:title" content="Halo · Dragonhound Labs">
+<meta property="og:description" content="Terraform for a two-host, public/private deployment of the Argus suite, with credential-free tests.">
+<meta property="og:url" content="https://halo.dragonhound.dev/">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://dragonhound.dev/og.png">
+<link rel="icon" href="/vendor/dh/favicons/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/vendor/dh/dh-tokens.css">
+<link rel="stylesheet" href="/style.css">
+<script src="/vendor/dh/dh-theme.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top wrap">
+  <a href="https://dragonhound.dev/"><img src="/vendor/dh/favicons/favicon.svg" width="24" height="24" alt="">Dragonhound Labs</a>
+  <button class="theme" type="button" data-dh-theme-toggle aria-label="Dark theme" aria-pressed="false">Theme</button>
+</header>
+<main id="main" class="wrap">
+  <h1>Halo: the Argus suite as Terraform</h1>
+  <p>argus-halo deploys the full Argus suite as a public, read-only stack: two Hetzner hosts split public and private, behind Cloudflare, with state in HCP Terraform. It's sized to cost about €11 a month.</p>
+  <p class="status">The stack isn't running at the moment. The live demos on dragonhound.dev are static sites.</p>
+  <p class="cta"><a class="btn primary" href="https://github.com/smk762/argus-halo">Source on GitHub</a><a class="btn" href="https://github.com/smk762/argus-halo/blob/dev/docs/security.md">Security model</a><a class="btn" href="https://github.com/smk762/argus-halo/blob/dev/docs/runbook.md">Runbook</a></p>
+
+  <h2>Architecture</h2>
+  <div class="arch">
+    <div class="box"><h3>Cloudflare</h3><p>Hides the origin, enforces strict TLS, rate-limits the paths that cost money.</p></div>
+    <p class="link">↓ HTTPS</p>
+    <div class="box"><h3>Demo host: public, disposable</h3><p>Caddy, Studio, and lens, curator, quarry, forge, proof and atlas from pinned images. All read-only.</p></div>
+    <p class="link">↕ private network</p>
+    <div class="box"><h3>Core host: no public data ports</h3><p>Postgres, Qdrant and Silo, with Prometheus and Grafana. SSH and Grafana answer one admin address.</p></div>
+    <p class="link">↑ restored on first boot</p>
+    <div class="box"><h3>R2: the recorded run</h3><p>GPU work runs once on local hardware. The hosts replay its output.</p></div>
+  </div>
+
+  <h2>What it demonstrates</h2>
+  <ul class="list">
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/tests/security.tftest.hcl">Tests that need no credentials</a></h3><p><code>terraform test</code> plans the whole configuration against mocked providers and asserts firewall, TLS, DNS and rate-limit properties.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/preflight.tf">Failing at plan time</a></h3><p>A postcondition checks the server type against live Hetzner stock and lists what is available, before anything is created.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/variables.tf">Refusing dangerous input</a></h3><p>An admin address of <code>0.0.0.0/0</code> doesn't pass validation.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/docs/decisions.md">Updates without replacing hosts</a></h3><p>Changing <code>user_data</code> forces a new server, so it carries only config and a fetcher. Service versions and routes update in place.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/dns.tf">Guarding what can't be rebuilt cheaply</a></h3><p><code>prevent_destroy</code> on the R2 bucket makes a routine <code>terraform destroy</code> refuse.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/scripts/check-cloud-init.sh">Checks <code>validate</code> can't do</a></h3><p>Templates are rendered, then routes, rate limits, environment, image pins and read-only settings are checked against each other.</p></li>
+      <li><h3><a href="https://github.com/smk762/argus-halo/blob/dev/scripts/smoke-demo.py">A proven attack surface</a></h3><p>A smoke test boots the demo tier from its real compose file and pins, then checks what it refuses: GPU work, writes, path traversal and cross-site requests.</p></li>
+  </ul>
+
+  <h2>Try it without an account</h2>
+  <pre><code>git clone https://github.com/smk762/argus-halo
+cd argus-halo
+make test       # terraform test, mocked providers
+make validate   # templates, routes, pins, fmt, validate
+make smoke      # boot the demo tier in Docker and probe it</code></pre>
+</main>
+<footer class="wrap"><p>MIT licensed. Part of <a href="https://dragonhound.dev/">Dragonhound Labs</a>. No analytics or tracking.</p></footer>
+</body>
+</html>

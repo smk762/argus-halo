@@ -1,0 +1,23 @@
+# Pin bumps arrive as PRs against dev, where the smoke test re-proves the public
+# surface before they can merge.
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directories: ["/stack/demo", "/stack/core"]
+    target-branch: dev
+    schedule: { interval: weekly }
+    groups:
+      suite: { patterns: ["ghcr.io/smk762/*"] }
+    ignore:
+      # Data-format bound: these move with the tape, by hand.
+      - dependency-name: qdrant/qdrant
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: terraform
+    directory: /
+    target-branch: dev
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule: { interval: weekly }

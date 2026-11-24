@@ -24,9 +24,11 @@
 # /API/LENS/CAPTION/x routes to lens and skips this rule entirely.
 #
 # proof has landed (#8) and the question is settled: POST /api/proof/run/stream
-# is provably 403'd by ARGUS_PROOF_READ_ONLY=1, verified through the proxy
-# against the pinned image, so it is deliberately NOT metered here -- there is
-# no upstream cost or write behind it to protect.
+# is 403'd by ARGUS_PROOF_READ_ONLY=1, so it is deliberately NOT metered here --
+# there is no upstream cost or write behind it to protect. Atlas is the same
+# shape: POST /api/atlas/bake and /osm are 403, and /controls fails at mkdir
+# on the read-only jobs mount before gdalwarp, so it is not the metered path.
+# The single free-plan rule stays on the caption key and the curator write.
 #
 # Known gap, tracked: this rule matches literal paths, but Caddy normalises
 # `//`, `/./` and `/../` before routing, so /api/lens//caption reaches lens as

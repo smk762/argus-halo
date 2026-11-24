@@ -35,9 +35,11 @@ output "grafana_password" {
 }
 
 output "ssh_core" {
-  value = "ssh root@${module.core.public_ipv4}"
+  description = "SSH command for the core host (admin IP only)."
+  value       = "ssh root@${module.core.public_ipv4}"
 }
 
 output "ssh_demo" {
-  value = "ssh root@${module.demo.public_ipv4}"
+  description = "SSH command for the demo host (admin IP only)."
+  value       = "ssh root@${module.demo.public_ipv4}"
 }
