@@ -69,7 +69,7 @@ services:
   # volumes survive it -- the pin protects the volume AND the patch no longer
   # destroys it (#18).
   node-exporter:
-    image: prom/node-exporter:v1.12.1
+    image: prom/node-exporter:v1.13.1
     restart: unless-stopped
     network_mode: host
     pid: host
