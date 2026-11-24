@@ -160,7 +160,7 @@ services:
   node-exporter:
     # Pinned like the stores: a container recreate should not silently
     # change the thing reporting on the host.
-    image: prom/node-exporter:v1.12.1
+    image: prom/node-exporter:v1.13.1
     restart: unless-stopped
     network_mode: host
     pid: host
