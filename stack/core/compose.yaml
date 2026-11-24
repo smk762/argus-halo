@@ -97,7 +97,7 @@ services:
       - prometheus_data:/prometheus
 
   grafana:
-    image: grafana/grafana:13.1.1
+    image: grafana/grafana:13.3.1
     restart: unless-stopped
     # Host port is a compose-level value; the in-container port comes from
     # GF_SERVER_HTTP_PORT in .env (deploy.env carries the same number as
