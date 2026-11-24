@@ -86,7 +86,7 @@ services:
     depends_on: [postgres]
 
   prometheus:
-    image: prom/prometheus:v3.13.1
+    image: prom/prometheus:v3.16.0
     restart: unless-stopped
     # Private only -- reach the UI with `ssh -L 9090:<private_ip>:9090`.
     ports: ["${PRIVATE_IP}:9090:9090"]
