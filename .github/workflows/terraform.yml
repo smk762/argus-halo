@@ -13,7 +13,7 @@ jobs:
     name: fmt + validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: hashicorp/setup-terraform@v4
         with:
@@ -57,7 +57,7 @@ jobs:
     name: demo smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # The suite images unpack to about 14 GB.
       - name: free disk
@@ -89,7 +89,7 @@ jobs:
           fi
 
       - if: steps.guard.outputs.run == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - if: steps.guard.outputs.run == 'true'
         uses: hashicorp/setup-terraform@v4
