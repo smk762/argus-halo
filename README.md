@@ -101,7 +101,7 @@ Each is argued in [docs/decisions.md](docs/decisions.md).
 - **Strict TLS is zone-wide.** `cloudflare_zone_setting.ssl` applies to every proxied origin in the zone. Check that each one holds a valid certificate before the first apply, or it starts returning 526.
 - **Nothing reads the core stores yet.** They are provisioned and seeded ahead of lens's lineage-replay backend ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). Until then lens captions through a hosted endpoint.
 - **The tape is not published** ([#9](https://github.com/smk762/argus-halo/issues/9)), so a fresh deploy starts with empty galleries. `/atlas` needs a seeded job, and quarry's Sources view needs a ~45 GB archive this host does not mount.
-- **Remote `plan` in CI** is wired but skipped until a `TF_API_TOKEN` secret is set.
+- **Remote `plan` in CI** runs on PRs, except from forks and Dependabot, which get no `TF_API_TOKEN`.
 
 ## Branches
 

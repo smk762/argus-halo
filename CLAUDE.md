@@ -38,7 +38,7 @@ Each rule names what fails when it is broken. **UNENFORCED** means only this fil
 | Mount demo data writable | `check` |
 | Interpolate a `${VAR}` the rendered env does not define | `check` |
 | Restore a tape or seed over live data | `check` (marker guard); `SEED_FORCE=1` is the operator override |
-| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit fails `scripts/check-plan.py` in the CI plan unless labelled `replace-hosts`; the plan is skipped without `TF_API_TOKEN` |
+| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit fails `scripts/check-plan.py` in the CI plan unless labelled `replace-hosts`; the plan is skipped without `TF_API_TOKEN` (forks, Dependabot) |
 | Replace core with an expired `tape_dump_url` (presigned, 7 days at most) | `check "tape_url_fresh"` in `tape.tf` warns at plan time; `tftest` |
 | Destroy the R2 tape bucket in passing | `prevent_destroy` in `dns.tf` |
 | Commit tfvars or state | `check`, `.gitignore` |
@@ -71,4 +71,4 @@ terraform plan         # remote, in HCP (needs `terraform login`)
 
 ## CI / release
 
-`.github/workflows/terraform.yml`: fmt, validate, `terraform test`, tflint, `check-cloud-init.sh` and the demo smoke test on every PR and on pushes to `dev`/`main`; remote `plan` on PRs once a `TF_API_TOKEN` secret is set (skipped otherwise). `pages.yml` deploys `web/` on pushes to `dev`. `.github/workflows/suite.yml`: the argus-ci suite-map check (the block above plus this repo's row in SUITE.md). No version tags — a release is `main` fast-forwarded to a `dev` commit that passed CI, and `main` is what the hosts run.
+`.github/workflows/terraform.yml`: fmt, validate, `terraform test`, tflint, `check-cloud-init.sh` and the demo smoke test on every PR and on pushes to `dev`/`main`; remote `plan` on PRs (skipped where `TF_API_TOKEN` is absent: forks, Dependabot). `pages.yml` deploys `web/` on pushes to `dev`. `.github/workflows/suite.yml`: the argus-ci suite-map check (the block above plus this repo's row in SUITE.md). No version tags — a release is `main` fast-forwarded to a `dev` commit that passed CI, and `main` is what the hosts run.

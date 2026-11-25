@@ -72,8 +72,8 @@ jobs:
           python3 scripts/smoke-demo.py
 
   # Remote plan runs in HCP Terraform, which holds the provider tokens as
-  # workspace variables. Enable by setting the TF_API_TOKEN repository secret
-  # (a user API token from app.terraform.io); it stays skipped until then.
+  # workspace variables. Needs the TF_API_TOKEN repository secret (a user API
+  # token from app.terraform.io); skipped without it, as on fork and Dependabot PRs.
   plan:
     name: plan
     runs-on: ubuntu-latest
