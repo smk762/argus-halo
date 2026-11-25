@@ -355,6 +355,17 @@ if missing:
 print(f"  frontend ARGUS_*_URL values == routed namespaces ({len(urls)})")
 PY
 
+say "checking nothing private is committed or published"
+tracked="$(git -C "$repo" ls-files '*.tfvars' '*.tfstate' '*.tfstate.*' '.env')"
+[ -z "$tracked" ] || die "never commit these: $tracked"
+# The suite's docs gate (ai-code-auditor, argus-handbook) refuses these; use
+# $(terraform output ...) or a placeholder instead.
+if grep -nE '\b(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01])|169\.254)\.[0-9]{1,3}\.[0-9]{1,3}\b|(^|[^[:alnum:]_.])(/home/[[:alnum:]]|/Users/[[:alnum:]]|/root/|/srv/|/mnt/[[:alnum:]])' \
+  "$repo/README.md" "$repo"/docs/*.md; then
+  die "private addresses or server paths in published docs (above)"
+fi
+echo "  no tfvars/state tracked; docs carry no private addresses or server paths"
+
 say "checking pins are exact and the demo posture is declared"
 python3 - "$repo" "$caddyfile" <<'PY'
 import re, sys, yaml
@@ -438,6 +449,17 @@ if gone:
     sys.exit(f"error: @offlimits no longer refuses {sorted(gone)}")
 if not re.search(r"@delete\s*\{\s*method DELETE\s+path /api/\*\s*\}", caddyfile):
     sys.exit("error: @delete must match every DELETE under /api/*")
+# Core publishes on the private interface, except Grafana (firewalled to admin_ip).
+for name, svc in tiers["core"].items():
+    public = [p for p in svc.get("ports") or [] if not str(p).startswith("${PRIVATE_IP}:")]
+    if public and name != "grafana":
+        sys.exit(f"error: stack/core {name} publishes {public}; bind to ${{PRIVATE_IP}}")
+
+# A restore must no-op over live data unless an operator says otherwise.
+for path in ("core/restore-tape.sh", "demo/restore-seed.sh"):
+    if not re.search(r'^\[ -f "\$MARKER" \][^\n]*exit 0', open(f"{repo}/stack/{path}").read(), re.M):
+        sys.exit(f"error: stack/{path} must exit early when its marker exists")
+
 print("  pins exact; read-only switches, secrets, mounts, ports and edge refusals as declared")
 PY
 
