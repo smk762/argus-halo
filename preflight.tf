@@ -28,7 +28,7 @@ data "hcloud_location" "target" {
 
   lifecycle {
     postcondition {
-      condition = contains(module.stock.available_server_types, var.server_type)
+      condition = !var.check_stock || contains(module.stock.available_server_types, var.server_type)
       error_message = format(
         "server_type %q cannot be built in location %q right now -- it is either not a current Hetzner plan identifier, or temporarily out of stock there. Available in %s: %s. Set the server_type workspace variable to one of those, or try another location (fsn1 / nbg1 / hel1).",
         var.server_type,
@@ -37,5 +37,13 @@ data "hcloud_location" "target" {
         length(module.stock.available_server_types) > 0 ? join(", ", module.stock.available_server_types) : "(none -- this location is exhausted; switch location)",
       )
     }
+  }
+}
+
+# With check_stock off (CI's speculative plans only), stock is still reported.
+check "stock" {
+  assert {
+    condition     = var.check_stock || contains(module.stock.available_server_types, var.server_type)
+    error_message = "server_type ${var.server_type} cannot be built in ${var.location} right now; an apply would refuse."
   }
 }

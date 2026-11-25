@@ -3,7 +3,7 @@
 [![terraform](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml/badge.svg?branch=dev)](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Terraform for a public, read-only deployment of the [Argus](https://dragonhound.dev) ML-tooling suite: two Hetzner hosts split public/private, behind Cloudflare, with state in HCP Terraform. About €11 a month.
+Terraform for a public, read-only deployment of the [Argus](https://dragonhound.dev) ML-tooling suite: two Hetzner hosts split public/private, behind Cloudflare, with state in HCP Terraform. About €12 a month plus VAT.
 
 > **Project page:** [halo.dragonhound.dev](https://halo.dragonhound.dev). **Status:** the stack is not currently running. The public demos on [dragonhound.dev](https://dragonhound.dev) are static; this repository is the full-stack deployment. It is validated in CI by mocked-provider plans and by booting the demo tier from its pinned images.
 

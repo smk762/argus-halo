@@ -67,7 +67,7 @@ terraform plan         # remote, in HCP (needs `terraform login`)
 - **A new `.env` key** goes Terraform variable → the tier's `templatefile(...)` → the template's `.env` block → the service's `environment:`. A fixed setting belongs on the service alone.
 - **`/api/<service>/*` is a passthrough, not a whitelist**, so each service's gating is the public boundary.
 - **Qdrant's pin fixes the tape's snapshot minor version** (`make tape` and `restore-tape.sh` both check it).
-- `preflight.tf` checks `server_type` against live stock at plan time, through `modules/stock` so tests can substitute the answer.
+- `preflight.tf` checks `server_type` against live stock at plan time, through `modules/stock` so tests can substitute the answer. CI's plan passes `check_stock=false`, which makes it a warning; never set that for an apply.
 
 ## CI / release
 

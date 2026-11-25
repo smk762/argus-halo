@@ -110,5 +110,6 @@ jobs:
           ALLOW: ${{ contains(github.event.pull_request.labels.*.name, 'replace-hosts') && '--allow-replace' || '' }}
         run: |
           # Provider errors can quote an API URL, so mask account and zone ids.
-          terraform plan -input=false -no-color 2>&1 | sed -E 's/\b[0-9a-f]{32}\b/<id>/g' | tee plan.txt
+          # Stock changes by the minute and this plan is never applied, so it only warns.
+          terraform plan -input=false -no-color -var check_stock=false 2>&1 | sed -E 's/\b[0-9a-f]{32}\b/<id>/g' | tee plan.txt
           python3 scripts/check-plan.py $ALLOW plan.txt

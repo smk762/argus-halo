@@ -117,6 +117,15 @@ run "unavailable_server_type_fails_the_plan" {
   expect_failures = [data.hcloud_location.target]
 }
 
+run "unavailable_server_type_only_warns_without_check_stock" {
+  command = plan
+  variables {
+    server_type = "cx11"
+    check_stock = false
+  }
+  expect_failures = [check.stock]
+}
+
 run "quoted_caption_key_is_rejected" {
   command = plan
   variables { lens_caption_api_key = "it's" }

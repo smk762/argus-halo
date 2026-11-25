@@ -1,6 +1,6 @@
 # Monitoring
 
-Prometheus and Grafana run on **core**, next to the stores — no extra host, so the €10.98/mo is unchanged. Prometheus scrapes both tiers over the private network:
+Prometheus and Grafana run on **core**, next to the stores — no extra host, so the cost (about €12/mo) is unchanged. Prometheus scrapes both tiers over the private network:
 
 - **hosts** — `node_exporter` on core and demo (port 9100 on each private address)
 - **stores** — Postgres (`postgres_exporter`), Qdrant (`/metrics`), MinIO (`/minio/v2/metrics/cluster`, served token-free on the private net)

@@ -64,7 +64,8 @@ Do not `apply` until all of these are true. Several items that used to live here
 are now enforced by code and need no human:
 
 - `server_type` — `plan` checks it against live Hetzner stock and names the
-  working alternatives (`preflight.tf`).
+  working alternatives (`preflight.tf`). CI's plans only warn (`check_stock=false`);
+  leave it on for an apply.
 - **The public surface** — `make smoke` (CI, every PR) boots the demo tier from
   its pins and proves every refusal it relies on: no live GPU work, no writes,
   curator's path containment (docs/security.md).
