@@ -89,6 +89,14 @@ run "metered_paths_are_rate_limited" {
     condition     = cloudflare_ruleset.demo_ratelimit.rules[0].action == "block"
     error_message = "the rate limit must block."
   }
+
+  assert {
+    condition = (
+      cloudflare_ruleset.demo_ratelimit.rules[0].ratelimit.period == 10 &&
+      cloudflare_ruleset.demo_ratelimit.rules[0].ratelimit.mitigation_timeout == 10
+    )
+    error_message = "Cloudflare's free plan only accepts a 10 s rate-limit period and block."
+  }
 }
 
 run "admin_ip_open_to_the_world_is_rejected" {

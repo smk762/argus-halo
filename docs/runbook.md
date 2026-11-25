@@ -108,7 +108,7 @@ your own walkthroughs or a tiny curated set until replay lands
 only means the *bundled frontend* doesn't call them. Anyone with curl reaches them
 either way, so the real controls are the ones in the config: a Cloudflare
 rate-limit rule (`waf.tf`) caps `/api/lens/caption`, `/api/curator/scan` and
-`/api/curator/upload` at 15 req/min per IP, Caddy caps request bodies at 32 MB,
+`/api/curator/upload` at 3 requests per 10 s per IP, Caddy caps request bodies at 32 MB,
 curator confines paths to `ARGUS_CURATOR_SCAN_ROOT`, and an empty
 `ARGUS_CURATOR_EXPORT_ROOT` makes `/export` refuse. `folders` and `thumb` are
 deliberately uncapped — a folder view fires thumb once per tile and would trip the
