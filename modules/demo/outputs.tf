@@ -15,5 +15,6 @@ output "open_ports" {
 
 output "ssh_sources" {
   description = "Source CIDRs SSH accepts."
+  sensitive   = true
   value       = flatten([for r in hcloud_firewall.demo.rule : r.source_ips if r.port == "22"])
 }

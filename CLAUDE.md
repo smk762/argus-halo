@@ -38,11 +38,11 @@ Each rule names what fails when it is broken. **UNENFORCED** means only this fil
 | Mount demo data writable | `check` |
 | Interpolate a `${VAR}` the rendered env does not define | `check` |
 | Restore a tape or seed over live data | `check` (marker guard); `SEED_FORCE=1` is the operator override |
-| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit is **UNENFORCED**: #48 |
-| Replace core with an expired `tape_dump_url` (presigned, 7 days at most) | **UNENFORCED**: #48 |
+| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit fails `scripts/check-plan.py` in the CI plan unless labelled `replace-hosts`; the plan is skipped without `TF_API_TOKEN` |
+| Replace core with an expired `tape_dump_url` (presigned, 7 days at most) | `check "tape_url_fresh"` in `tape.tf` warns at plan time; `tftest` |
 | Destroy the R2 tape bucket in passing | `prevent_destroy` in `dns.tf` |
 | Commit tfvars or state | `check`, `.gitignore` |
-| Print a generated secret | Terraform refuses a non-sensitive output of a sensitive value |
+| Print a generated secret, `admin_ip`, the SSH key or Cloudflare ids (CI plan logs are public) | All are `sensitive`; Terraform refuses to print them |
 | A private address or server path in `README.md` or `docs/` | `check` |
 | Use `halo.dragonhound.dev` as the stack's `domain` (it is the static page) | `tftest` |
 

@@ -13,7 +13,7 @@ variable "hcloud_token" {
 }
 
 variable "cloudflare_api_token" {
-  description = "Cloudflare token with Zone:DNS:Edit, Zone Settings:Edit (for the SSL-mode resource) and Workers R2 Storage:Edit on dragonhound.dev."
+  description = "Cloudflare token with Zone:DNS:Edit, Zone Settings:Edit (for the SSL-mode resource), Zone WAF:Edit (for the rate limit) and Workers R2 Storage:Edit on dragonhound.dev."
   type        = string
   sensitive   = true
 }
@@ -21,11 +21,15 @@ variable "cloudflare_api_token" {
 variable "cloudflare_account_id" {
   description = "Cloudflare account ID (dashboard sidebar, or Overview > API)."
   type        = string
+  # Sensitive so a plan in public CI logs does not print it.
+  sensitive = true
 }
 
 variable "cloudflare_zone_id" {
   description = "Zone ID for dragonhound.dev (Overview > API section, bottom right)."
   type        = string
+  # Sensitive so a plan in public CI logs does not print it.
+  sensitive = true
 }
 
 # --- access ------------------------------------------------------------------
@@ -33,11 +37,15 @@ variable "cloudflare_zone_id" {
 variable "ssh_public_key" {
   description = "Public key installed on both hosts. Paste the key itself, not a path."
   type        = string
+  # Sensitive so a plan in public CI logs does not print it.
+  sensitive = true
 }
 
 variable "admin_ip" {
   description = "Your source address in CIDR form, e.g. 203.0.113.9/32. SSH is restricted to this."
   type        = string
+  # Sensitive so a plan in public CI logs does not print it.
+  sensitive = true
 
   # Ask the question at plan time, like preflight.tf does for server_type. A bare
   # address (203.0.113.9) otherwise passes plan and fails at apply on two firewall

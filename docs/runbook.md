@@ -27,7 +27,7 @@ variables.
 |---|---|---|
 | HCP Terraform login | `terraform login` | CLI → HCP auth (`~/.terraform.d/credentials.tfrc.json`) |
 | Hetzner API token (Read & Write) | Console → Security → API tokens | `hcloud_token` |
-| Cloudflare API token | Zone:DNS:Edit + Zone Settings:Edit + Workers R2 Storage:Edit on dragonhound.dev | `cloudflare_api_token` |
+| Cloudflare API token | Zone:DNS:Edit + Zone Settings:Edit + Zone WAF:Edit + Workers R2 Storage:Edit on dragonhound.dev | `cloudflare_api_token` |
 | Cloudflare account ID | Dashboard sidebar | `cloudflare_account_id` |
 | Cloudflare zone ID | dragonhound.dev → Overview → API | `cloudflare_zone_id` |
 | SSH public key | your keypair (`ssh-keygen -t ed25519`) | `ssh_public_key` |
@@ -83,16 +83,16 @@ are now enforced by code and need no human:
 
 What's left:
 
-- [ ] **`tape_dump_url` is fresh** if you are seeding (§5). Any apply that changes
+- [ ] **`tape_dump_url` is fresh** if you are seeding (§5); `plan` warns when it has expired. Any apply that changes
       cloud-init or a `random_password` recreates the host(s), and core re-runs
       the restore on first boot against whatever URL is in the workspace. R2
       presigns expire after 7 days.
 - [ ] Workspace variables are set with real values (Execution Mode = Remote),
       including `lens_caption_api_key` as **Sensitive** (a Cerebras key). Without
       it lens returns `401` on every caption.
-- [ ] The Cloudflare token carries **Zone Settings:Edit** as well as DNS and R2 —
-      the SSL-mode resource needs it, and a token minted before that resource
-      existed won't have it.
+- [ ] The Cloudflare token carries **Zone Settings:Edit** (SSL mode) and **Zone WAF:Edit**
+      (the rate limit) as well as DNS and R2. Without WAF, `plan` only warns
+      ("failed to make http request for the dry run … 403") and `apply` fails.
 - [ ] `terraform plan` output has been reviewed and matches expectations.
 
 **Public exposure — keep the crowd on `demo` mode.** The compose sets

@@ -1,0 +1,3 @@
+  # module.core.hcloud_firewall.core will be updated in-place
+  # random_password.x must be replaced
+Plan: 1 to add, 1 to change, 1 to destroy.
