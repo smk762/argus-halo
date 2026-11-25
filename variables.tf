@@ -83,7 +83,7 @@ variable "domain" {
 variable "location" {
   description = "Hetzner location. fsn1/nbg1 = Germany, hel1 = Finland."
   type        = string
-  default     = "hel1"
+  default     = "fsn1"
 }
 
 variable "network_zone" {
