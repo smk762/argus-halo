@@ -25,6 +25,7 @@ validate: check-cloud-init
 test:
 	terraform init -backend=false
 	terraform test
+	./tests/check_plan_test.sh
 
 # Boot the demo tier locally from its real compose file and probe its refusals.
 smoke:

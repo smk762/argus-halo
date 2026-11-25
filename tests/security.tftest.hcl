@@ -122,3 +122,25 @@ run "project_page_hostname_is_rejected" {
   }
   expect_failures = [var.domain]
 }
+
+run "expired_tape_url_warns" {
+  command = plan
+  variables {
+    tape_dump_url = "https://example.com/t?X-Amz-Date=20200101T000000Z&X-Amz-Expires=604800&X-Amz-Signature=0"
+  }
+  expect_failures = [check.tape_url_fresh]
+}
+
+run "fresh_tape_url_is_quiet" {
+  command = plan
+  variables {
+    tape_dump_url = "https://example.com/t?X-Amz-Date=20990101T000000Z&X-Amz-Expires=604800&X-Amz-Signature=0"
+  }
+}
+
+run "stable_tape_url_is_quiet" {
+  command = plan
+  variables {
+    tape_dump_url = "https://example.com/tape.tar.zst"
+  }
+}

@@ -1,0 +1,3 @@
+  # module.core.hcloud_server.core must be replaced
+-/+ resource "hcloud_server" "core" {
+Plan: 1 to add, 0 to change, 1 to destroy.

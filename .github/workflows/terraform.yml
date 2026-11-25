@@ -36,6 +36,9 @@ jobs:
       - name: test
         run: terraform test
 
+      - name: plan guard
+        run: ./tests/check_plan_test.sh
+
       - uses: terraform-linters/setup-tflint@v6
 
       - name: tflint
@@ -100,5 +103,11 @@ jobs:
       - if: steps.guard.outputs.run == 'true'
         run: terraform init
 
+      # A replaced host loses its volumes, so it needs the `replace-hosts` label.
       - if: steps.guard.outputs.run == 'true'
-        run: terraform plan -input=false
+        shell: bash
+        env:
+          ALLOW: ${{ contains(github.event.pull_request.labels.*.name, 'replace-hosts') && '--allow-replace' || '' }}
+        run: |
+          terraform plan -input=false -no-color | tee plan.txt
+          python3 scripts/check-plan.py $ALLOW plan.txt

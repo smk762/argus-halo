@@ -45,5 +45,6 @@ output "open_ports" {
 
 output "allowed_sources" {
   description = "Every source CIDR any public port accepts."
+  sensitive   = true
   value       = flatten([for r in hcloud_firewall.core.rule : r.source_ips])
 }

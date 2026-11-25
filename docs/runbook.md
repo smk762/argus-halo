@@ -83,7 +83,7 @@ are now enforced by code and need no human:
 
 What's left:
 
-- [ ] **`tape_dump_url` is fresh** if you are seeding (§5). Any apply that changes
+- [ ] **`tape_dump_url` is fresh** if you are seeding (§5); `plan` warns when it has expired. Any apply that changes
       cloud-init or a `random_password` recreates the host(s), and core re-runs
       the restore on first boot against whatever URL is in the workspace. R2
       presigns expire after 7 days.
