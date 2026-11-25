@@ -38,7 +38,7 @@ Each rule names what fails when it is broken. **UNENFORCED** means only this fil
 | Mount demo data writable | `check` |
 | Interpolate a `${VAR}` the rendered env does not define | `check` |
 | Restore a tape or seed over live data | `check` (marker guard); `SEED_FORCE=1` is the operator override |
-| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit fails `scripts/check-plan.py` in the CI plan unless labelled `replace-hosts`; the plan is skipped without `TF_API_TOKEN` |
+| Put changeable things in `user_data` (ForceNew: an edit replaces the host and loses its volumes, #18) | Partial: `check` limits `write_files`. A value edit fails `scripts/check-plan.py` in the CI plan unless labelled `replace-hosts`; the plan is skipped without `TF_API_TOKEN` (forks, Dependabot) |
 | Replace core with an expired `tape_dump_url` (presigned, 7 days at most) | `check "tape_url_fresh"` in `tape.tf` warns at plan time; `tftest` |
 | Destroy the R2 tape bucket in passing | `prevent_destroy` in `dns.tf` |
 | Commit tfvars or state | `check`, `.gitignore` |
@@ -67,8 +67,8 @@ terraform plan         # remote, in HCP (needs `terraform login`)
 - **A new `.env` key** goes Terraform variable → the tier's `templatefile(...)` → the template's `.env` block → the service's `environment:`. A fixed setting belongs on the service alone.
 - **`/api/<service>/*` is a passthrough, not a whitelist**, so each service's gating is the public boundary.
 - **Qdrant's pin fixes the tape's snapshot minor version** (`make tape` and `restore-tape.sh` both check it).
-- `preflight.tf` checks `server_type` against live stock at plan time, through `modules/stock` so tests can substitute the answer.
+- `preflight.tf` checks `server_type` against live stock at plan time, through `modules/stock` so tests can substitute the answer. CI's plan passes `check_stock=false`, which makes it a warning; never set that for an apply.
 
 ## CI / release
 
-`.github/workflows/terraform.yml`: fmt, validate, `terraform test`, tflint, `check-cloud-init.sh` and the demo smoke test on every PR and on pushes to `dev`/`main`; remote `plan` on PRs once a `TF_API_TOKEN` secret is set (skipped otherwise). `pages.yml` deploys `web/` on pushes to `dev`. `.github/workflows/suite.yml`: the argus-ci suite-map check (the block above plus this repo's row in SUITE.md). No version tags — a release is `main` fast-forwarded to a `dev` commit that passed CI, and `main` is what the hosts run.
+`.github/workflows/terraform.yml`: fmt, validate, `terraform test`, tflint, `check-cloud-init.sh` and the demo smoke test on every PR and on pushes to `dev`/`main`; remote `plan` on PRs (skipped where `TF_API_TOKEN` is absent: forks, Dependabot). `pages.yml` deploys `web/` on pushes to `dev`. `.github/workflows/suite.yml`: the argus-ci suite-map check (the block above plus this repo's row in SUITE.md). No version tags — a release is `main` fast-forwarded to a `dev` commit that passed CI, and `main` is what the hosts run.

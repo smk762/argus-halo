@@ -3,7 +3,7 @@
 [![terraform](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml/badge.svg?branch=dev)](https://github.com/smk762/argus-halo/actions/workflows/terraform.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Terraform for a public, read-only deployment of the [Argus](https://dragonhound.dev) ML-tooling suite: two Hetzner hosts split public/private, behind Cloudflare, with state in HCP Terraform. About €11 a month.
+Terraform for a public, read-only deployment of the [Argus](https://dragonhound.dev) ML-tooling suite: two Hetzner hosts split public/private, behind Cloudflare, with state in HCP Terraform. About €12 a month plus VAT.
 
 > **Project page:** [halo.dragonhound.dev](https://halo.dragonhound.dev). **Status:** the stack is not currently running. The public demos on [dragonhound.dev](https://dragonhound.dev) are static; this repository is the full-stack deployment. It is validated in CI by mocked-provider plans and by booting the demo tier from its pinned images.
 
@@ -101,7 +101,7 @@ Each is argued in [docs/decisions.md](docs/decisions.md).
 - **Strict TLS is zone-wide.** `cloudflare_zone_setting.ssl` applies to every proxied origin in the zone. Check that each one holds a valid certificate before the first apply, or it starts returning 526.
 - **Nothing reads the core stores yet.** They are provisioned and seeded ahead of lens's lineage-replay backend ([argus-lens#45](https://github.com/smk762/argus-lens/issues/45)). Until then lens captions through a hosted endpoint.
 - **The tape is not published** ([#9](https://github.com/smk762/argus-halo/issues/9)), so a fresh deploy starts with empty galleries. `/atlas` needs a seeded job, and quarry's Sources view needs a ~45 GB archive this host does not mount.
-- **Remote `plan` in CI** is wired but skipped until a `TF_API_TOKEN` secret is set.
+- **Remote `plan` in CI** runs on PRs, except from forks and Dependabot, which get no `TF_API_TOKEN`.
 
 ## Branches
 

@@ -104,6 +104,13 @@ variable "server_type" {
   default     = "cx23"
 }
 
+variable "check_stock" {
+  description = "Fail the plan when server_type is out of stock. CI turns it off, since its plans are never applied; leave it on everywhere else."
+  type        = bool
+  default     = true
+  nullable    = false
+}
+
 variable "image" {
   description = "Base image for both tiers."
   type        = string

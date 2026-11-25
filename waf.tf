@@ -6,12 +6,12 @@
 # default `demo` mode these paths are unused, so this is belt-and-suspenders.
 #
 # /api/curator/upload is in scope too: it is the one unauthenticated WRITE curator
-# exposes, and 15/min is far above any real use of it. Scan-root containment
-# bounds where an upload lands, not how often it arrives, so containment is not a
-# substitute for a cap. Body size is capped separately, in the demo Caddyfile.
+# exposes, and the cap (3 per 10 s, about 18/min) is above any real use of it.
+# Scan-root containment bounds where an upload lands, not how often it arrives,
+# so containment is not a substitute for a cap. Body size is capped separately, in the demo Caddyfile.
 #
 # Deliberately NOT covered: /api/curator/folders and /api/curator/thumb (a folder
-# view fires thumb once per tile, so a 15/min cap would trip on a single
+# view fires thumb once per tile, so this cap would trip on a single
 # legitimate page load), and /api/curator/export (curator refuses it outright
 # here -- ARGUS_CURATOR_EXPORT_ROOT is empty -- so there is no upstream cost to
 # protect; whether it should be routed at all is #19).
@@ -36,7 +36,8 @@
 # case-folding version of this; the structural version needs Cloudflare URL
 # normalization enabled on the zone (Rules > Settings) to be closed here.
 #
-# Free-plan Cloudflare allows a single rate-limiting rule; keep it to one.
+# Free-plan Cloudflare allows a single rate-limiting rule, and only 10 s for its
+# period and block (the provider's plan-time dry run refuses anything else).
 resource "cloudflare_ruleset" "demo_ratelimit" {
   zone_id     = var.cloudflare_zone_id
   name        = "argus-halo edge rate limit"
@@ -51,9 +52,9 @@ resource "cloudflare_ruleset" "demo_ratelimit" {
     action      = "block"
     ratelimit = {
       characteristics     = ["ip.src", "cf.colo.id"]
-      period              = 60
-      requests_per_period = 15
-      mitigation_timeout  = 60
+      period              = 10
+      requests_per_period = 3
+      mitigation_timeout  = 10
       requests_to_origin  = true
     }
   }]
