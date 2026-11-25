@@ -109,5 +109,6 @@ jobs:
         env:
           ALLOW: ${{ contains(github.event.pull_request.labels.*.name, 'replace-hosts') && '--allow-replace' || '' }}
         run: |
-          terraform plan -input=false -no-color | tee plan.txt
+          # Provider errors can quote an API URL, so mask account and zone ids.
+          terraform plan -input=false -no-color 2>&1 | sed -E 's/\b[0-9a-f]{32}\b/<id>/g' | tee plan.txt
           python3 scripts/check-plan.py $ALLOW plan.txt

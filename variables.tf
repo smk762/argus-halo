@@ -13,7 +13,7 @@ variable "hcloud_token" {
 }
 
 variable "cloudflare_api_token" {
-  description = "Cloudflare token with Zone:DNS:Edit, Zone Settings:Edit (for the SSL-mode resource) and Workers R2 Storage:Edit on dragonhound.dev."
+  description = "Cloudflare token with Zone:DNS:Edit, Zone Settings:Edit (for the SSL-mode resource), Zone WAF:Edit (for the rate limit) and Workers R2 Storage:Edit on dragonhound.dev."
   type        = string
   sensitive   = true
 }
