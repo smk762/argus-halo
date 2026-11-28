@@ -51,8 +51,12 @@ jobs:
       # waf.tf's rate-limit expression still agree. See scripts/check-cloud-init.sh.
       - name: cloud-init render + Caddyfile + route/waf agreement
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet -r scripts/requirements.txt
           ./scripts/check-cloud-init.sh
+
+      # The smoke test's own teardown and secrets check, without docker.
+      - name: smoke script unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
   # Boots the demo tier from its real compose file and pins, and proves what it
   # refuses. A pin bump cannot merge without passing this.
@@ -68,7 +72,7 @@ jobs:
 
       - name: boot and probe
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet -r scripts/requirements.txt
           python3 scripts/smoke-demo.py
 
   # Remote plan runs in HCP Terraform, which holds the provider tokens as

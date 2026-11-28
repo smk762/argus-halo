@@ -1,0 +1,2 @@
+# What scripts/*.py import (CI: pip install -r scripts/requirements.txt).
+pyyaml
