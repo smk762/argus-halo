@@ -19,6 +19,7 @@ statically instead.
 Needs docker (with compose) and python3 + pyyaml.
 """
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,7 +75,9 @@ def build(work: Path) -> Path:
     for p in (work, *work.rglob("*")):
         p.chmod(0o755 if p.is_dir() else 0o644)
     (work / "compose.yaml").write_text(yaml.safe_dump(doc))
-    (work / "smoke.env").write_text("".join(f"{k}={v}\n" for k, v in ENV.items()))
+    env = work / "smoke.env"  # compose reads it; no container mounts it, so only we need to
+    env.touch(mode=0o600)
+    env.write_text("".join(f"{k}={v}\n" for k, v in ENV.items()))
     return work / "compose.yaml"
 
 
@@ -169,7 +172,7 @@ def probe():
     expect("a scan inside the root works", code, 200, text)
     if code == 200:
         scan = json.loads(text)["scan_id"]
-        for dest in ("/tmp/out", "out", "../../tmp/out"):
+        for dest in ("/tmp/out", "out", "../../tmp/out"):  # noqa: S108 -- a dest curator must refuse, never written
             refused("POST", "/api/curator/export", 400, {"scan_id": scan, "dest": dest})
         refused("POST", "/api/curator/export", (400, 403), {"scan_id": scan, "dest": "out", "mode": "move"})
 
@@ -183,38 +186,57 @@ def probe():
 def secrets(compose):
     print("secrets")
     for svc in ("frontend", "caddy", "curator", "quarry", "forge", "proof", "atlas"):
-        ids = compose("ps", "-q", svc, capture_output=True, text=True).stdout.split()
+        ps = compose("ps", "-q", svc, capture_output=True, text=True, check=False)
+        ids = ps.stdout.split() if ps.returncode == 0 else []
+        # `docker inspect` with no ids is an error, and one missing service must
+        # not stop the others being checked.
+        expect(f"{svc} has a container to inspect", bool(ids), True, ps.stderr or "")
+        if not ids:
+            continue
         env = subprocess.run(["docker", "inspect", "-f", "{{json .Config.Env}}", *ids],
-                             capture_output=True, text=True, check=True).stdout
-        expect(f"{svc} does not hold the caption key", "smoke-caption-key" in env, False)
+                             capture_output=True, text=True, check=False)
+        expect(f"{svc} can be inspected", env.returncode, 0, env.stderr or "")
+        if env.returncode == 0:
+            expect(f"{svc} does not hold the caption key", "smoke-caption-key" in env.stdout, False)
 
 
 def main():
     keep = "--keep" in sys.argv
     work = Path(tempfile.mkdtemp(prefix="halo-smoke-"))
-    file = build(work)
-
-    def compose(*args, **kw):
-        return subprocess.run(["docker", "compose", "-p", "halo-smoke", "--env-file", str(work / "smoke.env"),
-                               "-f", str(file), *args], check=True, **kw)
-
-    compose("up", "-d", "--quiet-pull")
     try:
-        deadline = time.time() + 180
-        while time.time() < deadline:
-            if call("GET", "/")[0] == 200 and all(health(s)[0] == 200 for s in DIRECT):
-                break
-            time.sleep(3)
-        probe()
-        secrets(compose)
-        if failures:
-            compose("ps", "-a")
-            compose("logs", "--tail", "30")
+        file = build(work)
+
+        def compose(*args, **kw):
+            kw.setdefault("check", True)
+            return subprocess.run(["docker", "compose", "-p", "halo-smoke", "--env-file", str(work / "smoke.env"),
+                                   "-f", str(file), *args], **kw)
+
+        try:
+            # Inside the try: an `up` that fails partway has still started some of it.
+            compose("up", "-d", "--quiet-pull")
+            deadline = time.time() + 180
+            while time.time() < deadline:
+                if call("GET", "/")[0] == 200 and all(health(s)[0] == 200 for s in DIRECT):
+                    break
+                time.sleep(3)
+            probe()
+            secrets(compose)
+            if failures:
+                compose("ps", "-a")
+                compose("logs", "--tail", "30")
+        finally:
+            if keep:
+                print(f"left running on http://127.0.0.1:{EDGE} (Host: {HOST}); project halo-smoke; files in {work}")
+            else:
+                # down, not stop: the project name is fixed, so anything left
+                # (containers, networks, volumes) would be the next run's state.
+                # Unchecked, so a failing teardown can't hide why the run failed.
+                down = compose("down", "-v", "--remove-orphans", "-t", "3", check=False)
+                if down.returncode:
+                    print(f"teardown failed ({down.returncode}); run: docker compose -p halo-smoke down -v")
     finally:
-        if keep:
-            print(f"left running on http://127.0.0.1:{EDGE} (Host: {HOST}); project halo-smoke")
-        else:
-            compose("stop", "-t", "3")
+        if not keep:
+            shutil.rmtree(work, ignore_errors=True)  # smoke.env holds the generated key
     print(f"\n{len(failures)} failure(s)" if failures else "\nall probes passed")
     return 1 if failures else 0
 
